@@ -92,6 +92,10 @@ import net.floodlightcontroller.topology.ITopologyService;
 import net.floodlightcontroller.util.FlowModUtils;
 import net.floodlightcontroller.util.OFMessageUtils;
 
+import java.io.PrintWriter;
+import java.io.FileWriter;
+import java.io.IOException;
+
 /**
  * A simple load balancer module for ping, tcp, and udp flows. This module is accessed 
  * via a REST API defined close to the OpenStack Quantum LBaaS (Load-balancer-as-a-Service)
@@ -138,6 +142,11 @@ ILoadBalancerService, IOFMessageListener {
 	protected HashMap<Pair<Match,DatapathId>,String> flowToVipId;
 	protected HashMap<String, SwitchPort> memberIdToSwitchPort;
 
+	// QB: added to keep track of load balancing report times
+	protected long my_timer;
+	protected long my_start_time;
+	protected ArrayList<String> switches_installed_wildcard_rule;
+
 	private static ScheduledFuture<?> healthMonitoring;
 	private static int healthMonitorsInterval = 10; /* (s) can be changed through NBI */
 
@@ -146,6 +155,8 @@ ILoadBalancerService, IOFMessageListener {
 	protected static boolean isMonitoringEnabled = false;
 
 	private static final int flowStatsInterval = 15;
+
+	protected static final String ups_dpid = "00:00:00:00:00:00:00:0b"; // QB: change this when changing pool size
 
 	protected enum TLS {
 		HTTPS(TransportPort.of(443)),
@@ -178,7 +189,7 @@ ILoadBalancerService, IOFMessageListener {
 	public class IPClient {
 		IPv4Address ipAddress;
 		IpProtocol nw_proto;
-		TransportPort srcPort; // tcp/udp src port. icmp type (OFMatch convention)
+		TransportPort srcPort; // tcp/udp src port. icmp type (OFMatch convention) // QB: hmmm
 		TransportPort targetPort; // tcp/udp dst port, icmp code (OFMatch convention)
 
 		public IPClient() {
@@ -212,6 +223,7 @@ ILoadBalancerService, IOFMessageListener {
 	receive(IOFSwitch sw, OFMessage msg, FloodlightContext cntx) {
 		switch (msg.getType()) {
 		case PACKET_IN:
+			// System.out.println("in RECEIVE");
 			return processPacketIn(sw, (OFPacketIn)msg, cntx);
 		default:
 			break;
@@ -224,7 +236,7 @@ ILoadBalancerService, IOFMessageListener {
 
 		Ethernet eth = IFloodlightProviderService.bcStore.get(cntx, IFloodlightProviderService.CONTEXT_PI_PAYLOAD);
 		IPacket pkt = eth.getPayload(); 	
-
+		// System.out.println("PACKETIN FROM [" + sw.getId().toString() + "]"); // QB
 		if (eth.isBroadcast() || eth.isMulticast()) {
 			// handle ARP for VIP
 			if (pkt instanceof ARP) {
@@ -233,7 +245,7 @@ ILoadBalancerService, IOFMessageListener {
 
 				IPv4Address targetProtocolAddress = arpRequest.getTargetProtocolAddress();
 
-				if (vipIpToId.containsKey(targetProtocolAddress.getInt())) {
+				if (vipIpToId.containsKey(targetProtocolAddress.getInt())) { // QB: hmm seems like its hitting here! printing (in arp; then stopping?)
 					String vipId = vipIpToId.get(targetProtocolAddress.getInt());
 					vipProxyArpReply(sw, pi, cntx, vipId);
 					return Command.STOP;
@@ -338,24 +350,94 @@ ILoadBalancerService, IOFMessageListener {
 							memberWeights.put(memberId,members.get(memberId).weight);
 						}
 					}
+					String memberToPick = "";
+					try {
+						FileWriter fw = new FileWriter("./scripts/pylb-output/lb-decisions", true);				// Switch statistics collection
+						PrintWriter st = new PrintWriter(fw);
+						// log.info("service: " + String.valueOf(statisticsService));
+						// log.info("lbMethod: " + String.valueOf(pool.lbMethod));
+						
+						boolean new_round = false; // QB
+						
+						long curr = 0;
+						if(pool.lbMethod == LBPool.STATISTICS && statisticsService != null){
+							statisticsService.collectStatistics(true);
+							memberPortBandwidth = collectSwitchPortBandwidth(pool);
+							// log.info("memberPortBandwidth: " + memberPortBandwidth.toString());
 
-					// Switch statistics collection
-					if(pool.lbMethod == LBPool.STATISTICS && statisticsService != null){
-						statisticsService.collectStatistics(true);
-						memberPortBandwidth = collectSwitchPortBandwidth(pool);
+							///////////
+							curr = System.currentTimeMillis();
+							// System.out.println(String.valueOf((curr)/1000));
+							// System.out.println(String.valueOf((my_timer)/1000));
+							if ((curr/1000) != (my_timer/1000)) { // if they are equal, then dont print because it is the same stats round (approx)
+								new_round = true;
+							}
+							if (my_start_time == 0) { // set it here to begin; dont want to initialze somewhere else (like when stats threads start) because that wont be as accurate
+								my_start_time = curr;
+							}
+
+							if (new_round) { // load observed by switch (before misreports);
+								st.println("BANDWIDTH USAGE at time [t=" + String.valueOf((curr-my_start_time)/1000) + "s] with elapsed time [" + String.valueOf(Math.round((float)(curr-my_timer))/1000) + "s]======================================");
+								my_timer = curr; // then update my_timer to new value
+								//System.out.println("BW USAGE=============================");
+								for (String k : memberPortBandwidth.keySet()) {
+									// st.println(memberIdToSwitchPort.get(k).getNodeId() + " (NodeID: " + k + ", PortID: " + OFPort.ofInt(2) + "): " + memberPortBandwidth.get(k).toString() + " bps");
+									st.println(memberIdToSwitchPort.get(k).getNodeId() + " (NodeID: " + k + ", PortID: " + memberIdToSwitchPort.get(k).getPortId() + "): " + memberPortBandwidth.get(k).toString() + " bps");
+									//System.out.println(k + ": " + memberPortBandwidth.get(k).toString());
+								}
+								//System.out.println("=====================================");
+								// st.println("========================================");
+								st.flush();
+								//st.close();
+							}
+						}
+
+						// String memberToPick = pool.pickMember(client,memberPortBandwidth,memberWeights,memberStatus);
+						memberToPick = pool.pickMember(memberPortBandwidth,memberStatus, 0, new_round, (curr-my_start_time)/1000);
+						LBMember member = members.get(memberToPick);
+						// System.out.println("member: " + members.keySet().toString());
+						if(member == null) {			//fix dereference violations
+							// st.close();
+							System.out.println("member null");
+							return Command.CONTINUE;
+						}
+						//System.out.println("member not NULL");
+						// st.println("member not NULL");
+						// st = new PrintWriter(fw);
+						if (new_round) {
+							st.println("Member " + IPv4Address.of(member.address) + " (id: "  + memberToPick + ") has been picked by the load balancer.");
+							st.println("======================================================\n");
+							System.out.println("Member " + IPv4Address.of(member.address) + " has been picked by the load balancer.\n");
+							//log.info("Member " + IPv4Address.of(member.address) + " has been picked by the load balancer.");
+							// for chosen member, check device manager and find and push routes, in both directions                  
+							st.close();
+							// pushBidirectionalVipRoutes(sw, pi, cntx, client, member, memberPortBandwidth.size());
+						}
+						pushBidirectionalVipRoutes(sw, pi, cntx, client, member, memberPortBandwidth.size());
+					} catch (IOException e) {
+						System.out.println("Error writing to file: "+e.toString());
 					}
 
-					LBMember member = members.get(pool.pickMember(client,memberPortBandwidth,memberWeights,memberStatus));
-					if(member == null)			//fix dereference violations
-						return Command.CONTINUE;
-
-					log.info("Member " + IPv4Address.of(member.address) + " has been picked by the load balancer.");
-					// for chosen member, check device manager and find and push routes, in both directions                    
-					pushBidirectionalVipRoutes(sw, pi, cntx, client, member);
-
-					// packet out based on table rule
-					pushPacket(pkt, sw, pi.getBufferId(), (pi.getVersion().compareTo(OFVersion.OF_12) < 0) ? pi.getInPort() : pi.getMatch().get(MatchField.IN_PORT), OFPort.TABLE,
-							cntx, true);
+					// if (DatapathId.of(ups_dpid).toString().equals(sw.toString())) {
+					if (DatapathId.of(ups_dpid).toString().equals(sw.getId().toString())) {
+						// packet out based on table rule
+						// pushPacket(pkt, sw, pi.getBufferId(), (pi.getVersion().compareTo(OFVersion.OF_12) < 0) ? pi.getInPort() : pi.getMatch().get(MatchField.IN_PORT), OFPort.TABLE,
+						// 		cntx, true);
+						pushPacket(pkt, sw, pi.getBufferId(), (pi.getVersion().compareTo(OFVersion.OF_12) < 0) ? pi.getInPort() : pi.getMatch().get(MatchField.IN_PORT), OFPort.of(Integer.parseInt(memberToPick)+1),
+							cntx, true); // QB: now this should just send the packet out the port instead of submitting it to the table
+						// 	pushPacket(pkt, sw, pi.getBufferId(), OFPort.of(2), OFPort.of(Integer.parseInt(memberToPick)+1),
+						// 	cntx, true); // QB: now this should just send the packet out the port instead of submitting it to the table
+						// System.out.println("pushing packet_out [ups] port [" + String.valueOf(Integer.parseInt(memberToPick)+1) + "]");
+						// System.out.println("pushing packet_out [ups] port [" + String.valueOf(Integer.parseInt(memberToPick)+1) + "]");
+					} else { // QB: dont think this else case ever hits; the packet only gets pushed out ups, then forwarded by other switches
+						pushPacket(pkt, sw, pi.getBufferId(), (pi.getVersion().compareTo(OFVersion.OF_12) < 0) ? pi.getInPort() : pi.getMatch().get(MatchField.IN_PORT), OFPort.of(1),
+								cntx, true);
+						System.out.println("here1");
+						System.out.println("sw: " + sw.getId().toString());
+						System.out.println("dpid: " + DatapathId.of(ups_dpid).toString());
+						System.out.println("dpid match: " + DatapathId.of(ups_dpid).toString().equals(sw.getId().toString()));
+						System.out.println("pushing packet_out [" + sw.toString() + "] port [" + String.valueOf(1) + "]");
+					}
 
 					counterPacketIn.increment();
 					return Command.STOP;
@@ -406,6 +488,7 @@ ILoadBalancerService, IOFMessageListener {
 						.setTargetHardwareAddress(eth.getSourceMACAddress())
 						.setTargetProtocolAddress(arpRequest.getSenderProtocolAddress()));
 
+		System.out.println("in arp");
 		// push ARP reply out
 		pushPacket(arpReply, sw, OFBufferId.NO_BUFFER, OFPort.ANY, (pi.getVersion().compareTo(OFVersion.OF_12) < 0 ? pi.getInPort() : pi.getMatch().get(MatchField.IN_PORT)), cntx, true);
 		log.debug("proxy ARP reply pushed as {}", IPv4.fromIPv4Address(vips.get(vipId).address));
@@ -436,6 +519,8 @@ ILoadBalancerService, IOFMessageListener {
 					new Object[] {sw, inPort, outPort});
 		}
 
+		// System.out.println(String.format("PacketOut srcSwitch=" + sw.getId().toString() +", inPort=" + inPort.getPortNumber() + ", outPort=" + outPort.getPortNumber()));
+
 		OFPacketOut.Builder pob = sw.getOFFactory().buildPacketOut();
 
 		// set actions
@@ -455,13 +540,17 @@ ILoadBalancerService, IOFMessageListener {
 						"Cannot send packetOut. " +
 						"srcSwitch={} inPort={} outPort={}",
 						new Object[] {sw, inPort, outPort});
+				System.out.println("ABOUT TO RETURN");
 				return;
 			}
 			byte[] packetData = packet.serialize();
 			pob.setData(packetData);
 		}
 
-		sw.write(pob.build());
+		// System.out.println("WRITING");
+		boolean b = sw.write(pob.build());
+		// sw.flush();
+		// System.out.println("write code: " + String.valueOf(b));
 	}
 
 	/**
@@ -472,20 +561,27 @@ ILoadBalancerService, IOFMessageListener {
 	 * @param IPClient client
 	 * @param LBMember member
 	 */
-	protected void pushBidirectionalVipRoutes(IOFSwitch sw, OFPacketIn pi, FloodlightContext cntx, IPClient client, LBMember member) {
+	protected void pushBidirectionalVipRoutes(IOFSwitch sw, OFPacketIn pi, FloodlightContext cntx, IPClient client, LBMember member, int num_members) {
 
 		// borrowed code from Forwarding to retrieve src and dst device entities
 		// Check if we have the location of the destination
 		IDevice srcDevice = null;
 		IDevice dstDevice = null;
 
+		// IPv4Address flow_source = IPv4Address.of("10.0.0.2");
+		// IPv4Address flow_source = IPv4Address.of("10.0.0.11");
+		IPv4Address flow_source = IPv4Address.of("10.0.0." + String.valueOf(num_members+1));
+
 		// retrieve all known devices
 		Collection<? extends IDevice> allDevices = deviceManagerService.getAllDevices();
 
 		for (IDevice d : allDevices) {
 			for (int j = 0; j < d.getIPv4Addresses().length; j++) {
-				if (srcDevice == null && client.ipAddress.equals(d.getIPv4Addresses()[j]))
+				// if (srcDevice == null && client.ipAddress.equals(d.getIPv4Addresses()[j]))
+				if (srcDevice == null && flow_source.equals(d.getIPv4Addresses()[j])) { // QB: just find the device that our flow source is on (s2 or so)
 					srcDevice = d;
+					log.info("found source device");
+				}
 				if (dstDevice == null && member.address == d.getIPv4Addresses()[j].getInt()) {
 					dstDevice = d;
 					member.macString = dstDevice.getMACAddressString();
@@ -496,8 +592,11 @@ ILoadBalancerService, IOFMessageListener {
 		}  
 
 		// srcDevice and/or dstDevice is null, no route can be pushed
-		if (srcDevice == null || dstDevice == null) return;
-
+		if (srcDevice == null || dstDevice == null) { //return;
+			log.info("looking like 0"); // QB: because the src IP is spoofed, srcDevice is null and so no routes are installed to get to the dest nor back (unless the randomly generated IP is 10.0.0.2 // need to make custom topo with all these hosts then or just ignore src ip somehow
+			return;
+		}
+		
 		DatapathId srcIsland = topologyService.getClusterId(sw.getId());
 
 		if (srcIsland == null) {
@@ -618,7 +717,7 @@ ILoadBalancerService, IOFMessageListener {
 
 		List<NodePortTuple> path = route.getPath();
 		if (path.size() > 0) {
-			for (int i = 0; i < path.size(); i+=2) {
+			for (int i = 0; i < path.size(); i+=2) { // QB: note: for each switch on path, push a route (can we push wildcard for second switch and exact for first?)
 				DatapathId sw = path.get(i).getNodeId();
 				String entryName;
 				Match.Builder mb = pinSwitch.getOFFactory().buildMatch();
@@ -638,10 +737,27 @@ ILoadBalancerService, IOFMessageListener {
 					entryName = "inbound-vip-"+ member.vipId+"-client-"+client.ipAddress
 							+"-srcport-"+client.srcPort+"-dstport-"+client.targetPort
 							+"-srcswitch-"+path.get(0).getNodeId()+"-sw-"+sw;
-					mb.setExact(MatchField.ETH_TYPE, EthType.IPv4)
-					.setExact(MatchField.IP_PROTO, client.nw_proto)
-					.setExact(MatchField.IPV4_SRC, client.ipAddress)
-					.setExact(MatchField.IN_PORT, path.get(i).getPortId());
+					System.out.println("DPID: " + String.valueOf(sw.toString()));
+					System.out.println("of: " + String.valueOf(DatapathId.of(ups_dpid).toString()));
+					System.out.println(DatapathId.of(ups_dpid).toString() == sw.toString());
+					System.out.println(DatapathId.of(ups_dpid).toString().equals(sw.toString()));
+					// if (DatapathId.of(ups_dpid).toString() == sw.toString()) { // QB: here
+					if (DatapathId.of(ups_dpid).toString().equals(sw.toString())) { // QB: if ups
+						mb.setExact(MatchField.ETH_TYPE, EthType.IPv4)
+						.setExact(MatchField.IP_PROTO, client.nw_proto)
+						.setExact(MatchField.IPV4_SRC, client.ipAddress)
+						.setExact(MatchField.IN_PORT, path.get(i).getPortId());
+					} else {
+						// mb.setExact(MatchField.ETH_TYPE, EthType.IPv4)
+						mb.setExact(MatchField.IP_PROTO, client.nw_proto)
+						// .setExact(MatchField.IPV4_SRC, client.ipAddress)
+						.wildcard(MatchField.IPV4_SRC)
+						.setExact(MatchField.IN_PORT, path.get(i).getPortId());
+					}
+					// mb.setExact(MatchField.ETH_TYPE, EthType.IPv4)
+					// .setExact(MatchField.IP_PROTO, client.nw_proto)
+					// .setExact(MatchField.IPV4_SRC, client.ipAddress)
+					// .setExact(MatchField.IN_PORT, path.get(i).getPortId());
 					if (client.nw_proto.equals(IpProtocol.TCP)) {
 						mb.setExact(MatchField.TCP_SRC, client.srcPort);
 					} else if (client.nw_proto.equals(IpProtocol.UDP)) {
@@ -650,6 +766,7 @@ ILoadBalancerService, IOFMessageListener {
 						mb.setExact(MatchField.SCTP_SRC, client.srcPort);
 					} else if (client.nw_proto.equals(IpProtocol.ICMP)) {
 						/* no-op */
+						System.out.println("was ICMP");
 					} else {
 						log.error("Unknown IpProtocol {} detected during inbound static VIP route push.", client.nw_proto);
 					}
@@ -678,6 +795,24 @@ ILoadBalancerService, IOFMessageListener {
 					entryName = "outbound-vip-"+ member.vipId+"-client-"+client.ipAddress
 							+"-srcport-"+client.srcPort+"-dstport-"+client.targetPort
 							+"-srcswitch-"+path.get(0).getNodeId()+"-sw-"+sw;
+					
+					// System.out.println("DPID: " + String.valueOf(sw.toString()));
+					// System.out.println("of: " + String.valueOf(DatapathId.of(ups_dpid).toString()));
+					// System.out.println(DatapathId.of(ups_dpid).toString() == sw.toString());
+					// System.out.println(DatapathId.of(ups_dpid).toString().equals(sw.toString()));
+					// // if (DatapathId.of(ups_dpid).toString() == sw.toString()) { // QB: here; eventually all switches will have this wildcard route; and even tho every packet in will force another rule to be installed, the packets that arrive during that time will hit the old wildcarded route at the directly connected switches (to the servers)
+					// if (DatapathId.of(ups_dpid).toString().equals(sw.toString())) {
+					// 	mb.setExact(MatchField.ETH_TYPE, EthType.IPv4)
+					// 	.setExact(MatchField.IP_PROTO, client.nw_proto)
+					// 	.setExact(MatchField.IPV4_DST, client.ipAddress)
+					// 	.setExact(MatchField.IN_PORT, path.get(i).getPortId());
+					// } else { // QB: was wildcarding both in the else case always cause I was comparing strings with ==
+					// 	mb.setExact(MatchField.ETH_TYPE, EthType.IPv4)
+					// 	.setExact(MatchField.IP_PROTO, client.nw_proto)
+					// 	// .setExact(MatchField.IPV4_DST, client.ipAddress)
+					// 	.wildcard(MatchField.IPV4_DST)
+					// 	.setExact(MatchField.IN_PORT, path.get(i).getPortId());
+					// }
 					mb.setExact(MatchField.ETH_TYPE, EthType.IPv4)
 					.setExact(MatchField.IP_PROTO, client.nw_proto)
 					.setExact(MatchField.IPV4_DST, client.ipAddress)
@@ -717,11 +852,17 @@ ILoadBalancerService, IOFMessageListener {
 
 				}
 
-				fmb.setActions(actions);
-				fmb.setPriority(U16.t(LB_PRIORITY));
-				fmb.setMatch(mb.build());
-				counterPacketOut.increment();
-				sfpService.addFlow(entryName, fmb.build(), sw);
+				if (!DatapathId.of(ups_dpid).toString().equals(sw.toString()) && inBound && switches_installed_wildcard_rule.contains(sw.toString())) {
+					System.out.println("ADDED WILDCARD FOR SWITCH ALREADY");
+					// continue;
+				} else {
+					fmb.setActions(actions);
+					fmb.setPriority(U16.t(LB_PRIORITY));
+					fmb.setMatch(mb.build());
+					counterPacketOut.increment();
+					sfpService.addFlow(entryName, fmb.build(), sw);
+				}
+				switches_installed_wildcard_rule.add(sw.toString());
 				Pair<Match, DatapathId> pair = new Pair<Match,DatapathId>(mb.build(),sw);
 				flowToVipId.put(pair, member.vipId); // used to set LBPool statistics
 			}
@@ -816,6 +957,7 @@ ILoadBalancerService, IOFMessageListener {
 											.setData(icmp_data_byte)								
 											)));
 
+			System.out.println("in health check");
 			FloodlightContext cntx = null;
 			pushPacket(icmpRequest, theSW, OFBufferId.NO_BUFFER, OFPort.CONTROLLER, npt.getPortId(), cntx, true);
 		}
@@ -881,14 +1023,20 @@ ILoadBalancerService, IOFMessageListener {
 				}
 			}
 		}
+
+		// log.info("deviceToMemberId: " + String.valueOf(deviceToMemberId));
+
 		// collect statistics of the switch ports attached to the members
 		if(!deviceToMemberId.isEmpty() && statisticsService != null){
 			for(Pair<IDevice, String> membersDevice: deviceToMemberId.keySet()){
 				String memberId = deviceToMemberId.get(membersDevice);
 				for(SwitchPort dstDap: membersDevice.getKey().getAttachmentPoints()){
+					// log.info("stats: " + statisticsService.getBandwidthConsumption().toString());
+					// log.info("bandwidth on [node " + String.valueOf(dstDap.getNodeId()) + "] [port " + String.valueOf(dstDap.getPortId()) + "]");
 					SwitchPortBandwidth bandwidthOfPort = statisticsService.getBandwidthConsumption(dstDap.getNodeId(), dstDap.getPortId());
 					if(bandwidthOfPort != null) // needs time for 1st collection, this avoids nullPointerException 
-						memberPortBandwidth.put(memberId, bandwidthOfPort.getBitsPerSecondRx());
+						// memberPortBandwidth.put(memberId, bandwidthOfPort.getBitsPerSecondRx());
+						memberPortBandwidth.put(memberId, bandwidthOfPort.getBitsPerSecondTx()); // QB: load balance on tx bits of these ports as opposed to rx (i.e. balance traffic going to the host)
 					memberIdToSwitchPort.put(memberId, dstDap);
 				}
 			}
@@ -1339,6 +1487,11 @@ ILoadBalancerService, IOFMessageListener {
 		memberIdToIp= new HashMap<String, Integer>();
 		flowToVipId = new HashMap<Pair<Match,DatapathId>,String>();
 		memberIdToSwitchPort= new HashMap<String, SwitchPort>();
+
+		// QB: initalize timer
+		my_timer = 0;
+		my_start_time = 0;
+		switches_installed_wildcard_rule = new ArrayList<String>();
 
 		threadService.getScheduledExecutor().scheduleAtFixedRate(new SetPoolStats(), flowStatsInterval, flowStatsInterval, TimeUnit.SECONDS);
 

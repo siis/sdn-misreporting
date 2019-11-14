@@ -1,0 +1,63 @@
+{
+ // Use IntelliSense to learn about possible attributes.
+ // Hover to view descriptions of existing attributes.
+ // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+ "version": "0.2.0",
+ "configurations": [
+  {
+   "type": "java",
+   "name": "Debug (Launch) - Current File",
+   "request": "launch",
+   "mainClass": "${file}"
+  },
+  {
+   "type": "java",
+   "name": "Debug (Launch)-Main<floodlight>",
+   "request": "launch",
+   "mainClass": "net.floodlightcontroller.core.Main",
+   "projectName": "floodlight"
+  },
+  {
+   "type": "java",
+   "name": "Debug (Launch)-PacketStreamerClient<floodlight>",
+   "request": "launch",
+   "mainClass": "net.floodlightcontroller.packetstreamer.PacketStreamerClient",
+   "projectName": "floodlight"
+  },
+  {
+   "type": "java",
+   "name": "Debug (Launch)-PacketStreamerServer<floodlight>",
+   "request": "launch",
+   "mainClass": "net.floodlightcontroller.packetstreamer.PacketStreamerServer",
+   "projectName": "floodlight"
+  },
+  {
+   "type": "java",
+   "name": "Debug (Launch)-LoadMonitor<floodlight>",
+   "request": "launch",
+   "mainClass": "net.floodlightcontroller.util.LoadMonitor",
+   "projectName": "floodlight"
+  },
+  {
+   "type": "java",
+   "name": "Debug (Launch)-AuthTool<floodlight>",
+   "request": "launch",
+   "mainClass": "org.sdnplatform.sync.client.AuthTool",
+   "projectName": "floodlight"
+  },
+  {
+   "type": "java",
+   "name": "Debug (Launch)-BootstrapTool<floodlight>",
+   "request": "launch",
+   "mainClass": "org.sdnplatform.sync.client.BootstrapTool",
+   "projectName": "floodlight"
+  },
+  {
+   "type": "java",
+   "name": "Debug (Launch)-SyncClient<floodlight>",
+   "request": "launch",
+   "mainClass": "org.sdnplatform.sync.client.SyncClient",
+   "projectName": "floodlight"
+  }
+ ]
+}

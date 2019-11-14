@@ -1533,7 +1533,9 @@ public class Forwarding extends ForwardingBase implements IFloodlightModule, IOF
 
     @Override
     public void linkDiscoveryUpdate(List<LDUpdate> updateList) {
+        System.out.println("operations: ");
         for (LDUpdate u : updateList) {
+            System.out.println(u.getOperation().toString());
             /* Remove flows on either side if link/port went down */
             if (u.getOperation() == UpdateOperation.LINK_REMOVED ||
                     u.getOperation() == UpdateOperation.PORT_DOWN ||
@@ -1554,11 +1556,12 @@ public class Forwarding extends ForwardingBase implements IFloodlightModule, IOF
                                 U64 cookieMask = U64.of(FLOWSET_MASK).or(AppCookie.getAppFieldMask());
 
                                 /* Delete flows matching on src port and outputting to src port */
-                                msgs = buildDeleteFlows(u.getSrcPort(), msgs, srcSw, cookie, cookieMask);
-                                messageDamper.write(srcSw, msgs);
+                                // msgs = buildDeleteFlows(u.getSrcPort(), msgs, srcSw, cookie, cookieMask);
+                                // messageDamper.write(srcSw, msgs);
                                 log.debug("src: Removing flows to/from DPID={}, port={}", u.getSrc(), u.getSrcPort());
                                 log.debug("src: Cookie/mask {}/{}", cookie, cookieMask);
-
+                                System.out.println("CLEARING OTHER THINGS");
+                                System.out.println("CLEARING ON DPID: " + u.getSrc().toString());
                                 /* 
                                  * Now, for each ID on this particular failed link, remove
                                  * all other flows in the network using this ID.
@@ -1571,10 +1574,13 @@ public class Forwarding extends ForwardingBase implements IFloodlightModule, IOF
                                         if (sw != null) {
 
                                             /* Delete flows matching on npt port and outputting to npt port*/
-                                            msgs = buildDeleteFlows(npt.getPortId(), msgs, sw, cookie, cookieMask);
-                                            messageDamper.write(sw, msgs);
+                                            // msgs = buildDeleteFlows(npt.getPortId(), msgs, sw, cookie, cookieMask);
+                                            // messageDamper.write(sw, msgs);
                                             log.debug("src: Removing same-cookie flows to/from DPID={}, port={}", npt.getNodeId(), npt.getPortId());
                                             log.debug("src: Cookie/mask {}/{}", cookie, cookieMask);
+
+                                            log.info("src: Removing same-cookie flows to/from DPID={}, port={}", npt.getNodeId(), npt.getPortId());
+                                            log.info("src: Cookie/mask {}/{}", cookie, cookieMask);
                                         }
                                     }
                                 }

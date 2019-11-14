@@ -46,7 +46,7 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 	private static boolean isEnabled = false;
 
 	private static int portStatsInterval = 10; /* could be set by REST API, so not final */
-	private static int flowStatsInterval = 11;
+	private static int flowStatsInterval = 10;
 
 	private static ScheduledFuture<?> portStatsCollector;
 	private static ScheduledFuture<?> flowStatsCollector;
@@ -90,52 +90,89 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 
 		@Override
 		public void run() {
-			Map<DatapathId, List<OFStatsReply>> replies = getSwitchStatistics(switchService.getAllSwitchDpids(), OFStatsType.PORT);
-			for (Entry<DatapathId, List<OFStatsReply>> e : replies.entrySet()) {
-				for (OFStatsReply r : e.getValue()) {
-					OFPortStatsReply psr = (OFPortStatsReply) r;
-					for (OFPortStatsEntry pse : psr.getEntries()) {
-						NodePortTuple npt = new NodePortTuple(e.getKey(), pse.getPortNo());
-						SwitchPortBandwidth spb;
-						if (portStats.containsKey(npt) || tentativePortStats.containsKey(npt)) {
-							if (portStats.containsKey(npt)) { /* update */
-								spb = portStats.get(npt);
-							} else if (tentativePortStats.containsKey(npt)) { /* finish */
-								spb = tentativePortStats.get(npt);
-								tentativePortStats.remove(npt);
-							} else {
-								log.error("Inconsistent state between tentative and official port stats lists.");
-								return;
-							}
+			synchronized (portStats) { // added this for the 1s just in case
+				log.info("QB: Running port stats collection...");
+				Map<DatapathId, List<OFStatsReply>> replies = getSwitchStatistics(switchService.getAllSwitchDpids(), OFStatsType.PORT);
+				log.info("got replies; reply len: " + String.valueOf(replies.size()));
+				// log.info("replies: " + replies.toString());
+				for (Entry<DatapathId, List<OFStatsReply>> e : replies.entrySet()) {
+					for (OFStatsReply r : e.getValue()) {
+						OFPortStatsReply psr = (OFPortStatsReply) r;
+						for (OFPortStatsEntry pse : psr.getEntries()) {
+							NodePortTuple npt = new NodePortTuple(e.getKey(), pse.getPortNo());
+							SwitchPortBandwidth spb;
+							if (portStats.containsKey(npt) || tentativePortStats.containsKey(npt)) { // QB: hmm some reason i think this always goes to else case and portStats never gets filled (prints empty)
+								if (portStats.containsKey(npt)) { /* update */
+									spb = portStats.get(npt);
+								} else if (tentativePortStats.containsKey(npt)) { /* finish */
+									spb = tentativePortStats.get(npt);
+									tentativePortStats.remove(npt);
+								} else {
+									log.error("Inconsistent state between tentative and official port stats lists.");
+									return;
+								}
 
-							/* Get counted bytes over the elapsed period. Check for counter overflow. */
-							U64 rxBytesCounted;
-							U64 txBytesCounted;
-							if (spb.getPriorByteValueRx().compareTo(pse.getRxBytes()) > 0) { /* overflow */
-								U64 upper = U64.NO_MASK.subtract(spb.getPriorByteValueRx());
-								U64 lower = pse.getRxBytes();
-								rxBytesCounted = upper.add(lower);
-							} else {
-								rxBytesCounted = pse.getRxBytes().subtract(spb.getPriorByteValueRx());
-							}
-							if (spb.getPriorByteValueTx().compareTo(pse.getTxBytes()) > 0) { /* overflow */
-								U64 upper = U64.NO_MASK.subtract(spb.getPriorByteValueTx());
-								U64 lower = pse.getTxBytes();
-								txBytesCounted = upper.add(lower);
-							} else {
-								txBytesCounted = pse.getTxBytes().subtract(spb.getPriorByteValueTx());
-							}
-							long speed = getSpeed(npt);
-							double timeDifSec = ((System.nanoTime() - spb.getStartTime_ns()) * 1.0 / 1000000) / MILLIS_PER_SEC;
-							portStats.put(npt, SwitchPortBandwidth.of(npt.getNodeId(), npt.getPortId(), 
-									U64.ofRaw(speed),
-									U64.ofRaw(Math.round((rxBytesCounted.getValue() * BITS_PER_BYTE) / timeDifSec)),
-									U64.ofRaw(Math.round((txBytesCounted.getValue() * BITS_PER_BYTE) / timeDifSec)),
-									pse.getRxBytes(), pse.getTxBytes())
-									);
+								// *****QB (12/31): need to prob somehow update portStats here properly for LC/WLC
+								/* Get counted bytes over the elapsed period. Check for counter overflow. */
+								U64 rxBytesCounted;
+								U64 txBytesCounted;
+								if (spb.getPriorByteValueRx().compareTo(pse.getRxBytes()) > 0) { /* overflow */
+									U64 upper = U64.NO_MASK.subtract(spb.getPriorByteValueRx());
+									U64 lower = pse.getRxBytes();
+									rxBytesCounted = upper.add(lower);
+								} else {
+									rxBytesCounted = pse.getRxBytes().subtract(spb.getPriorByteValueRx());
+								}
+								if (spb.getPriorByteValueTx().compareTo(pse.getTxBytes()) > 0) { /* overflow */
+									U64 upper = U64.NO_MASK.subtract(spb.getPriorByteValueTx());
+									U64 lower = pse.getTxBytes();
+									txBytesCounted = upper.add(lower);
+								} else {
+									txBytesCounted = pse.getTxBytes().subtract(spb.getPriorByteValueTx());
+								}
+								long speed = getSpeed(npt);
+								double timeDifSec = ((System.nanoTime() - spb.getStartTime_ns()) * 1.0 / 1000000) / MILLIS_PER_SEC;
+								// maybe add in here if its > start_time, dont update it; that way we can have a 1s timeout? hmmm...
+								// log.info("QB: [" + e.getKey() + "] has rxbytes of [" + pse.getRxBytes() + "], elapsed bytes of [" + String.valueOf(rxBytesCounted) + "] over timeDifSec [" + String.valueOf(timeDifSec) +"s], and [" + String.valueOf(U64.ofRaw(Math.round((rxBytesCounted.getValue() * BITS_PER_BYTE) / timeDifSec))) + "] bps, on port [" + String.valueOf(npt.getPortId()) + "]");
+								// System.out.println("curr: " + String.valueOf(System.nanoTime()));
+								// System.out.println("start: " + String.valueOf(spb.getStartTime_ns()));
+								// System.out.println("curr-start: " + String.valueOf((System.nanoTime()-spb.getStartTime_ns())/1000000000.0) + "s");
+								// if (System.nanoTime() < (spb.getStartTime_ns()+1500000000)) { // only update if the reply is not too old
+								// log.info("QB: [" + e.getKey() + "] has txbytes of [" + pse.getTxBytes() + "], elapsed bytes of [" + String.valueOf(txBytesCounted) + "] over timeDifSec [" + String.valueOf(timeDifSec) +"s], and [" + String.valueOf(U64.ofRaw(Math.round((txBytesCounted.getValue() * BITS_PER_BYTE) / timeDifSec))) + "] bps, on port [" + String.valueOf(npt.getPortId()) + "]");
 
-						} else { /* initialize */
-							tentativePortStats.put(npt, SwitchPortBandwidth.of(npt.getNodeId(), npt.getPortId(), U64.ZERO, U64.ZERO, U64.ZERO, pse.getRxBytes(), pse.getTxBytes()));
+        int policy = 0;
+        if ((policy == 0) || (policy == 1)) { // LL/WLL
+         System.out.println("policy in here (LL/WLL) is: " + String.valueOf(policy));
+         portStats.put(npt, SwitchPortBandwidth.of(npt.getNodeId(), npt.getPortId(), 
+         U64.ofRaw(speed),
+         U64.ofRaw(Math.round((rxBytesCounted.getValue() * BITS_PER_BYTE) / timeDifSec)),
+         U64.ofRaw(Math.round((txBytesCounted.getValue() * BITS_PER_BYTE) / timeDifSec)),
+         pse.getRxBytes(), pse.getTxBytes())
+         );
+        } else if ((policy == 2) || (policy == 3)) { // LC/WLC (divide by bytes/pkt to get # pkts, which we approx as # flows)
+									System.out.println("policy in here (LC/WLC) is: " + String.valueOf(policy));
+									// int avg_pkt_size = 1500; // or 30, or 80, or 60
+									// int avg_pkt_size = 1487; // or 30, or 80, or 60
+									int avg_pkt_size = 1200; // or 30, or 80, or 60
+         portStats.put(npt, SwitchPortBandwidth.of(npt.getNodeId(), npt.getPortId(), 
+         U64.ofRaw(speed),
+         U64.ofRaw(Math.round((rxBytesCounted.getValue()/avg_pkt_size) / timeDifSec)),
+         U64.ofRaw(Math.round((txBytesCounted.getValue()/avg_pkt_size) / timeDifSec)),
+         pse.getRxBytes(), pse.getTxBytes())
+         );
+        }
+								// portStats.put(npt, SwitchPortBandwidth.of(npt.getNodeId(), npt.getPortId(), 
+								// 		U64.ofRaw(speed),
+								// 		U64.ofRaw(Math.round((rxBytesCounted.getValue() * BITS_PER_BYTE) / timeDifSec)),
+								// 		U64.ofRaw(Math.round((txBytesCounted.getValue() * BITS_PER_BYTE) / timeDifSec)),
+								// 		pse.getRxBytes(), pse.getTxBytes())
+								// 		);
+								// }
+
+							} else { /* initialize */
+								// log.info("tentative: " + tentativePortStats.toString());
+								tentativePortStats.put(npt, SwitchPortBandwidth.of(npt.getNodeId(), npt.getPortId(), U64.ZERO, U64.ZERO, U64.ZERO, pse.getRxBytes(), pse.getTxBytes()));
+							}
 						}
 					}
 				}
@@ -422,7 +459,9 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 	 * Start all stats threads.
 	 */
 	private void startStatisticsCollection() {
-		portStatsCollector = threadPoolService.getScheduledExecutor().scheduleAtFixedRate(new PortStatsCollector(), portStatsInterval, portStatsInterval, TimeUnit.SECONDS);
+		// portStatsCollector = threadPoolService.getScheduledExecutor().scheduleAtFixedRate(new PortStatsCollector(), portStatsInterval, portStatsInterval, TimeUnit.SECONDS);
+		portStatsCollector = threadPoolService.getScheduledExecutor().scheduleAtFixedRate(new PortStatsCollector(), 1000, 1000, TimeUnit.MILLISECONDS); // QB: in terms of ms; seems g
+		// portStatsCollector = threadPoolService.getScheduledExecutor().scheduleAtFixedRate(new PortStatsCollector(), 2, 2, TimeUnit.SECONDS); // QB: seems g as well
 		tentativePortStats.clear(); /* must clear out, otherwise might have huge BW result if present and wait a long time before re-enabling stats */
 		flowStatsCollector = threadPoolService.getScheduledExecutor().scheduleAtFixedRate(new FlowStatsCollector(), flowStatsInterval, flowStatsInterval, TimeUnit.SECONDS);
 		portDescCollector = threadPoolService.getScheduledExecutor().scheduleAtFixedRate(new PortDescCollector(), portStatsInterval, portStatsInterval, TimeUnit.SECONDS);
@@ -463,7 +502,7 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 		 * finished the switch has not replied yet and therefore we won't
 		 * add the switch's stats to the reply.
 		 */
-		for (int iSleepCycles = 0; iSleepCycles < portStatsInterval; iSleepCycles++) {
+		for (int iSleepCycles = 0; iSleepCycles < portStatsInterval; iSleepCycles++) { // QB (important): even tho this is still 10, still find as we break once the threads are done
 			for (GetStatisticsThread curThread : activeThreads) {
 				if (curThread.getState() == State.TERMINATED) {
 					model.put(curThread.getSwitchId(), curThread.getStatisticsReply());
@@ -620,7 +659,8 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 			try {
 				if (req != null) {
 					future = sw.writeStatsRequest(req); 
-					values = (List<OFStatsReply>) future.get(portStatsInterval*1000 / 2, TimeUnit.MILLISECONDS);
+					// values = (List<OFStatsReply>) future.get(portStatsInterval*1000 / 2, TimeUnit.MILLISECONDS);
+					values = (List<OFStatsReply>) future.get(950, TimeUnit.MILLISECONDS);
 
 				}
 			} catch (Exception e) {

@@ -415,7 +415,8 @@ public class PortDownReconciliation implements IFloodlightModule,
             						invalidNeighborIngressAndMatches.put(match.get(MatchField.IN_PORT), matches);
             					}
             					// Remove flows from the switch with the invalid match
-            					// and outPort
+                                // and outPort
+                                System.out.println("CLEARING FLOW_MODS");
             					clearFlowMods(sw, entry.getMatch(), outPort);
             				}
             		}

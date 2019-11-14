@@ -386,6 +386,7 @@ public class Device implements IDevice {
 	 * @return
 	 */
 	protected boolean updateAttachmentPoint() {
+		// log.info("in here");
 		boolean moved = false;
 		this.oldAPs = attachmentPoints;
 		if (attachmentPoints == null || attachmentPoints.isEmpty()) {

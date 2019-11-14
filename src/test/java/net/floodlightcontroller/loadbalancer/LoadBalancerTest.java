@@ -907,12 +907,12 @@ public class LoadBalancerTest extends FloodlightTestCase {
 		HashMap<String, Short> membersWeight = new HashMap<String, Short>();
 		HashMap<String, Short> membersStatus = new HashMap<String, Short>();
 
-		String memberPickedStats = pool1.pickMember(client, membersBandwidth, membersWeight,membersStatus);
+		String memberPickedStats = pool1.pickMember(membersBandwidth,membersStatus, 0, true, 0);
 
-		String noMembers = pool3.pickMember(client, membersBandwidth, membersWeight,membersStatus);
+		String noMembers = pool3.pickMember(membersBandwidth,membersStatus, 0, true, 0);
 
 		membersBandwidth.clear();
-		String memberPickedNoData = pool1.pickMember(client, membersBandwidth, membersWeight,membersStatus);
+		String memberPickedNoData = pool1.pickMember(membersBandwidth,membersStatus, 0, true, 0);
 
 		assertTrue(memberPickedStats.equals("2"));
 		assertTrue(memberPickedNoData.equals("1")); // simple round robin
@@ -1036,17 +1036,17 @@ public class LoadBalancerTest extends FloodlightTestCase {
 		membersStatus.put(member5.id,(short) 1);
 		membersStatus.put(member6.id,(short) -1);
 
-		String memberPickedStats = pool1.pickMember(client, membersBandwidth, membersWeight,membersStatus);
+		String memberPickedStats = pool1.pickMember(membersBandwidth,membersStatus, 0, true, 0);
 
-		String noMembers = pool3.pickMember(client, membersBandwidth, membersWeight,membersStatus);
+		String noMembers = pool3.pickMember(membersBandwidth,membersStatus, 0, true, 0);
 
 		membersBandwidth.clear();
-		String memberPickedNoData = pool1.pickMember(client, membersBandwidth, membersWeight,membersStatus);
+		String memberPickedNoData = pool1.pickMember(membersBandwidth,membersStatus, 0, true, 0);
 
 		membersWeight.put(member3.id,(short) 3);
 		membersWeight.put(member4.id,(short) 1);
 
-		String weightedPool = pool2.pickMember(client, membersBandwidth, membersWeight,membersStatus);
+		String weightedPool = pool2.pickMember(membersBandwidth,membersStatus, 0, true, 0);
 
 		// verify pools associated with monitors
 		assertTrue(pool1.monitors.contains(monitor1.id));

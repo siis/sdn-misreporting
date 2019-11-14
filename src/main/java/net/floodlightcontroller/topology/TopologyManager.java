@@ -901,10 +901,10 @@ ITopologyManagerBackend, ILinkDiscoveryListener, IOFMessageListener {
                         update.getDst(), update.getDstPort(),
                         update.getLatency(), update.getType());
                 break;
-            case LINK_REMOVED:
-                removeLink(update.getSrc(), update.getSrcPort(),
-                        update.getDst(), update.getDstPort());
-                break;
+            // case LINK_REMOVED:
+            //     removeLink(update.getSrc(), update.getSrcPort(),
+            //             update.getDst(), update.getDstPort());
+            //     break;
             case SWITCH_UPDATED:
                 addOrUpdateSwitch(update.getSrc());
                 break;

@@ -188,6 +188,7 @@ IHAListener, IFloodlightModule, IOFSwitchService, IStoreListener<DatapathId> {
             log.warn("New switch added {} for already-added switch {}", sw, oldSw);
             // We need to disconnect and remove the old switch
             oldSw.cancelAllPendingRequests();
+            System.out.println("here2");
             addUpdateToQueue(new SwitchUpdate(dpid, SwitchUpdateType.REMOVED));
             oldSw.disconnect();
         }
@@ -229,6 +230,7 @@ IHAListener, IFloodlightModule, IOFSwitchService, IStoreListener<DatapathId> {
             // listeners
             addUpdateToQueue(new SwitchUpdate(dpid, SwitchUpdateType.ADDED));
         } else if((oldStatus.isVisible() && !newStatus.isVisible())) {
+            System.out.println("here3");
             addUpdateToQueue(new SwitchUpdate(dpid, SwitchUpdateType.REMOVED));
         }
 
@@ -372,6 +374,7 @@ IHAListener, IFloodlightModule, IOFSwitchService, IStoreListener<DatapathId> {
                     case ADDED:
                         // don't count here. We have more specific
                         // counters before the update is created
+                        // System.out.println("here5 - switch added");
                         listener.switchAdded(swId);
                         break;
                     case REMOVED:
@@ -1118,6 +1121,7 @@ IHAListener, IFloodlightModule, IOFSwitchService, IStoreListener<DatapathId> {
             // versionedSwtich won't be null. storeClient.get() always
             // returns a non-null or throws an exception
             if (versionedSwitch.getValue() == null) {
+                System.out.println("here1");
                 switchRemovedFromStore(key);
                 continue;
             }
@@ -1130,6 +1134,7 @@ IHAListener, IFloodlightModule, IOFSwitchService, IStoreListener<DatapathId> {
                         key.toString(), sw.getId());
                 continue;
             }
+            System.out.println("here4");
             switchAddedToStore(sw);
         }
     }

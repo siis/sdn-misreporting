@@ -359,6 +359,7 @@ public class Controller implements IFloodlightProviderService, IStorageSourceLis
 
         switch (m.getType()) {
             case PACKET_IN:
+                // System.out.println("here6 - packetIN");
             	counters.packetIn.increment();
                 OFPacketIn pi = (OFPacketIn)m;
 
