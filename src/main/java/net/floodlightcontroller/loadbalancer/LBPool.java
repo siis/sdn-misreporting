@@ -82,7 +82,7 @@ public class LBPool {
 
 	protected LBStats poolStats;
 
-	// QB: new
+	
 	ArrayList<U64> loads_since_last_chosen;
 	// ArrayList<Float> total_loads_since_last_chosen;
 	// ArrayList<Float> all_total_loads_since_last_chosen;
@@ -90,39 +90,54 @@ public class LBPool {
 	boolean first;
 	int round_training_over;
 	final int _attack_window_length = 300; // *****
-	final int _burst_training_window = 1; // *****
-	final int _rounds_traning = 60; // *****
-	final int warmup_rounds_before_traning = 30;
+	final int _burst_training_window = 0; // ***** acutally gets this +1 bursts
+	final int _rounds_traning = 300; // ***** get training switch vals afte warmup, for detecting bursts
+	final int warmup_rounds_before_traning = 600; // warmup before doing anything
 	ArrayList<U64> observed_loads;
-	final float PERCENTILE = (float) 0.99;
+	final float PERCENTILE = (float) 0.9; // ***** burst size threshold; doesnt matter if doing fixed period
 	float avg_under_report_amount = (float) 0.0;
 	float avg_burst_size;
 	boolean period_update_ready;
 	float bursts_observed;
 	ArrayList<U64> burst_list;
 	int round; // incremented at the end of pickMember
-	int period_for_goal_load;
+	float period_for_goal_load;
+	final boolean use_fixed_misreporting_period = true;
+	final double fixed_period_for_goal_load = 2; // for getting more precise misreporting frequencies for comparison against analytical model; can use shorter training
+
+	final boolean use_fixed_misreporting_val = true;
+	final long fixed_misreport_val_for_goal_load = (long)0; // 14 (LC) or 150e3 (LL)
+	
 	// final float GOAL_LOAD = (float) 5e3*8; // in bits
-	final float GOAL_LOAD = (float) 75; // in bits
-	double threshold = 0.01; // *****
-	final int ATTACK_TYPE = 2; // 1 for dos, 2 for stealthy, 3 for control
+	final float GOAL_LOAD = (float) 3700e3; // ***** */ in bits/flows
+	double threshold = 0.1; // *****
+	final int ATTACK_TYPE = 2; // ***** */ 1 for dos, 2 for stealthy, 3 for control
+
 	int delayed_ur_wll_50;
 	int delayed_ur_wlc_50;
 	int delayed_ur_wll_10;
 	int delayed_ur_wlc_10;
 	int batch_flag;
-	final int batch_size = 1;
-	final Random r4 = new Random();
+	final int AVG_LONG_FLOW_DUR = 22; // the window start for parse_exp should be the first multiple of this after training/warmup (eg for 50 training/warmup, window should start at 64)
+	final int batch_size = 5;
+	boolean do_misreport_random_batch; // updated dynamically
+	final boolean do_random_batch = false;
+	final float random_batch_perc = (float)0.6;
+	
+	final Random r4 = new Random(System.nanoTime());
+	final Random period_random_gen = new Random(System.nanoTime());
+	final Random batch_random_gen = new Random(System.nanoTime());
 	final int LL = 0; // least-loaded
 	final int WLL = 1; // weighted least-loaded
 	final int LC = 2; // least-conn
 	final int WLC = 3; // weighted least-conn
 	final int R = 4; // random
 	final int RR = 5; // round-robin
-	final int policy = 0; // QB: using this now instead of the arg for easier switching
+	final int policy = LL; // using this now instead of the arg for easier switching
 	final int policy_on_multi_min = -1;
 	int num_misreports;
 	int num_times_bad_switch_chosen_after_mis;
+	int num_times_bad_switch_outrightwin_after_mis;
 	int num_times_bad_switch_chosen_overall;
 	boolean misreported;
 	int NUM_ROUNDS;
@@ -134,11 +149,11 @@ public class LBPool {
 	long time_in_file_done;
 	int SHORT_FLOWS_TRAFFIC = 0;
 	int LONG_FLOWS_TRAFFIC = 1;
-	int TRAFFIC_TYPE = LONG_FLOWS_TRAFFIC;
-	// int TRAFFIC_TYPE = SHORT_FLOWS_TRAFFIC;
+	int TRAFFIC_TYPE = SHORT_FLOWS_TRAFFIC;
+	boolean send_misreport_flag;
 
 	public LBPool() {
-		// QB: new
+		
 		loads_since_last_chosen = new ArrayList<U64>();
 		// total_loads_since_last_chosen = new ArrayList();
 		// all_total_loads_since_last_chosen = new ArrayList();
@@ -153,14 +168,18 @@ public class LBPool {
 		adversary_loads_overall = new ArrayList<U64>();
 		adversary_loads_during_atk = new ArrayList<U64>();
 		round = 0;
-		period_for_goal_load = 0;
+		period_for_goal_load = (float) 0.0;
 		delayed_ur_wll_50 = 0;
 		delayed_ur_wlc_50 = 0;
 		delayed_ur_wll_10 = 0;
 		delayed_ur_wlc_10 = 0;
+		
 		batch_flag = 0;
+		do_misreport_random_batch = false;
+
 		num_misreports = 0;
 		num_times_bad_switch_chosen_after_mis = 0;
+		num_times_bad_switch_outrightwin_after_mis = 0;
 		num_times_bad_switch_chosen_overall = 0;
 		misreported = false;
 		NUM_ROUNDS = 1800;
@@ -180,12 +199,14 @@ public class LBPool {
 		// adminState = 0;
 		// status = 0;
 		previousMemberIndex = -1;
-		rm = new Random();
+		rm = new Random(System.nanoTime());
 		robin = 0;
 
 		membersBandwidth_last = new HashMap<String, U64>();
 		membersBandwidth_temp = new HashMap<String, U64>();
 		round_boundary = 0;
+
+		send_misreport_flag = false;
 
 		poolStats = new LBStats();
 	}
@@ -219,7 +240,7 @@ public class LBPool {
 		}
 	}
 
-	// QB: implement atk
+	
 	public U64 adversary_run(U64 current_load, int NUM_MEMBERS, int policy, long curr_time_in_file) {
 		// dont need to do pre-processing for LC/WLC (Sim:773) because we assume that
 		// the load balancer already has the proper statistics
@@ -228,83 +249,123 @@ public class LBPool {
 		}
 		// Phase 1 - Reconnaissance
 		System.out.println("time: " + String.valueOf(System.nanoTime()));
-		if (((System.nanoTime() - start_time) / 1e9) >= (warmup_rounds_before_traning + _rounds_traning)) { // if its been
-																																																																																																						// 600s warmup;
-																																																																																																						// lower this for
-																																																																																																						// initial testing
-			// if (loads_since_last_chosen.size() >= _rounds_traning) {
-			System.out.println("loads_since_last_chosen: ");
-			System.out.println(loads_since_last_chosen.toString());
-			Collections.sort(loads_since_last_chosen);
-			Collections.sort(observed_loads);
-			// double temp_arr[] = new double[loads_since_last_chosen.size()];
-			// double temp_arr[] = new double[observed_loads.size()];
-			temp_arr = new double[observed_loads.size()];
-			// for (int f = 0; f < loads_since_last_chosen.size(); f++) {
-			// temp_arr[f] = (double) loads_since_last_chosen.get(f);
-			// }
-			for (int f = 0; f < observed_loads.size(); f++) {
-				temp_arr[f] = (double) observed_loads.get(f).getValue();
-			}
-			Collections.sort(observed_loads);
-			if (current_load.getValue() > temp_arr[(int) (PERCENTILE * observed_loads.size())]) {
-				// consider it a burst
-				bursts_observed++;
-				burst_list.add(current_load);
-				System.out.println("true (burst): " + String.valueOf(current_load));
-				System.out.println("burst_list size: " + String.valueOf(burst_list.size()));
-				period_update_ready = true;
+		// if (((System.nanoTime() - start_time) / 1e9) >= (warmup_rounds_before_traning
+		// + _rounds_traning)) { // if its
+		// been
+		// 600s
+		// warmup;
+		// lower
+		// this for
+		// initial
+		// testing
+
+		if (ATTACK_TYPE == 3) { // just always add observed load for control (ATTACK_TYPE==3) and
+								// dont worry about bursts
+			observed_loads.add(current_load);
+		} else if (ATTACK_TYPE == 2) { // only record observed loads between end of warmup and start of
+										// burst detection
+			if (round >= (warmup_rounds_before_traning + _rounds_traning)) { // using round instead of time
+																				// function
+				// if (loads_since_last_chosen.size() >= _rounds_traning) {
+				Collections.sort(loads_since_last_chosen);
+				Collections.sort(observed_loads);
+				System.out.println("loads_since_last_chosen: ");
+				System.out.println(loads_since_last_chosen.toString());
+				// double temp_arr[] = new double[loads_since_last_chosen.size()];
+				// double temp_arr[] = new double[observed_loads.size()];
+				temp_arr = new double[observed_loads.size()];
+				// for (int f = 0; f < loads_since_last_chosen.size(); f++) {
+				// temp_arr[f] = (double) loads_since_last_chosen.get(f);
+				// }
+				for (int f = 0; f < observed_loads.size(); f++) {
+					temp_arr[f] = (double) observed_loads.get(f).getValue();
+				}
+				Collections.sort(observed_loads);
+				if (current_load.getValue() > temp_arr[(int) (PERCENTILE * observed_loads.size())]) {
+					// consider it a burst
+					bursts_observed++;
+					burst_list.add(current_load);
+					System.out.println("true (burst): " + String.valueOf(current_load));
+					System.out.println("burst_list size: " + String.valueOf(burst_list.size()));
+					period_update_ready = true;
+				} else {
+					// ignore
+				}
 			} else {
 				// ignore
 			}
-		} else {
-			// ignore
-		}
 
-		if ((bursts_observed == _burst_training_window + 1) && period_update_ready) {
-			period_update_ready = false;
-			// train on bursts now instead of picks
+			if ((bursts_observed == _burst_training_window + 1) && period_update_ready) { // only can get in here if
+																							// warmup/training are over
+				period_update_ready = false;
+				// train on bursts now instead of picks
 
-			// get average burst size
-			avg_burst_size = 0;
-			for (int l = 0; l < burst_list.size(); l++) {
-				avg_burst_size += burst_list.get(l).getValue();
-			}
-			avg_burst_size = avg_burst_size / burst_list.size();
-
-			// #######
-			if (round_training_over == 0) {
-				round_training_over = round;
-				time_in_file_done = curr_time_in_file;
-			}
-
-			period_for_goal_load = (int) (Math.round(avg_burst_size / GOAL_LOAD));
-			if (period_for_goal_load == 0) {
-				period_for_goal_load = 1;
-			}
-
-			if (round > warmup_rounds_before_traning) {
-				if (first) {
-					first = false;
-					observed_loads.add(current_load); // add this one last true_bw before we stop recording observed loads
+				// get average burst size
+				avg_burst_size = 0;
+				for (int l = 0; l < burst_list.size(); l++) {
+					avg_burst_size += burst_list.get(l).getValue();
 				}
-			}
-		}
+				avg_burst_size = avg_burst_size / burst_list.size();
 
-		if (round > warmup_rounds_before_traning) {
-			loads_since_last_chosen.add(current_load);
-			if (first) {
-				observed_loads.add(current_load);
+				// #######
+				if (round_training_over == 0) {
+					round_training_over = round;
+					time_in_file_done = curr_time_in_file;
+				}
+
+				// period_for_goal_load = (int) (Math.round(avg_burst_size / GOAL_LOAD));
+				period_for_goal_load = avg_burst_size / GOAL_LOAD;
+				if (period_for_goal_load == 0.0) {
+					period_for_goal_load = (float) 1.0;
+				}
+
+				// commented this out because only the one below should be needed
+				// if (round > warmup_rounds_before_traning) {
+				// if (first) {
+				// first = false;
+				// observed_loads.add(current_load); // add this one last true_bw before we stop
+				// recording observed
+				// // loads
+				// }
+				// }
+			}
+
+			// if (round > warmup_rounds_before_traning) {
+			if ((round >= warmup_rounds_before_traning) && (round < (warmup_rounds_before_traning + _rounds_traning))) { // 
+																															// start
+																															// recording
+																															// observed
+																															// loads
+																															// (for
+																															// burst
+																															// detection
+																															// after
+																															// training
+																															// rounds)
+																															// after
+																															// warmup,
+																															// and
+																															// before
+																															// burst
+																															// detection
+				loads_since_last_chosen.add(current_load);
+				// if (first) {
+				// observed_loads.add(current_load);
+				// }
+				observed_loads.add(current_load); //  dont care about this first flag since commented out
+													// above
 			}
 		}
 
 		// Phase 2 - Send misreport
 		if (ATTACK_TYPE == 1) { // dos attack
-			// membersBandwidth.put("member[" + String.valueOf(BAD_SWITCH) + "]", (float)
-			// 0);
-			misreported = true;
-			num_misreports++;
-			return U64.of(0);
+			if (round >= warmup_rounds_before_traning) {
+				// membersBandwidth.put("member[" + String.valueOf(BAD_SWITCH) + "]", (float)
+				// 0);
+				misreported = true;
+				num_misreports++;
+				return U64.of(0);
+			}
 		} else if (ATTACK_TYPE == 2) { // intelligent attack
 			System.out.println((bursts_observed >= _burst_training_window + 1));
 			System.out.println((round > round_training_over));
@@ -314,25 +375,67 @@ public class LBPool {
 				System.out.println((round % period_for_goal_load == 0));
 			}
 
+			if ((!use_fixed_misreporting_period && (period_random_gen.nextInt(101) <= (1.0 / period_for_goal_load * 100.0))) || (use_fixed_misreporting_period && period_random_gen.nextInt(101) <= (1.0 / fixed_period_for_goal_load * 100.0))) { // use this to randomize
+																							// misreports instead of
+																							// doing on specific period
+																							// (so we can do more fine
+																							// grained targets, since
+																							// periods can only be
+																							// integers)
+				send_misreport_flag = true;
+			} else {
+				send_misreport_flag = false;
+			}
+
+			try {
+				FileWriter fwt = new FileWriter("./sdnlb-scripts/pylb-output/adversary-true-loads", true);
+				PrintWriter pwt = new PrintWriter(fwt);
+				pwt.println("adversary true load at [t=" + String.valueOf(curr_time_in_file) + "s]:" + String.valueOf(current_load));
+				pwt.flush();
+				pwt.close();
+			} catch (IOException e) {
+				System.out.println("Error writing to true load file: "+ e.toString());
+			}
 			if (TRAFFIC_TYPE == SHORT_FLOWS_TRAFFIC) {
-				if (((bursts_observed >= _burst_training_window + 1) && (round > round_training_over)
-						&& (round < (round_training_over + _attack_window_length)) && (period_for_goal_load > 0)
-						&& (round % period_for_goal_load == 0)) || (delayed_ur_wll_50 >= 1) || (delayed_ur_wlc_50 >= 1)
-						|| (delayed_ur_wll_10 >= 1) || (delayed_ur_wlc_10 == 1)) {
+				// if (((bursts_observed >= _burst_training_window + 1) && (round >
+				// round_training_over)
+				// && (round < (round_training_over + _attack_window_length)) &&
+				// (period_for_goal_load > 0)
+				// && (round % period_for_goal_load == 0)) || (delayed_ur_wll_50 >= 1) ||
+				// (delayed_ur_wlc_50 >= 1)
+				// || (delayed_ur_wll_10 >= 1) || (delayed_ur_wlc_10 == 1)) {
+				// if (((bursts_observed >= _burst_training_window + 1) && (round > round_training_over)
+				// 		&& (round < (round_training_over + _attack_window_length)) && (period_for_goal_load > 0)
+				// 		&& send_misreport_flag) || (delayed_ur_wll_50 >= 1) || (delayed_ur_wlc_50 >= 1)
+				// 		|| (delayed_ur_wll_10 >= 1) || (delayed_ur_wlc_10 == 1)) {
+				if ((!use_fixed_misreporting_period && (bursts_observed >= _burst_training_window + 1) && (round > round_training_over)
+					&& (round < (round_training_over + _attack_window_length)) && (period_for_goal_load > 0)
+					&& send_misreport_flag) || (use_fixed_misreporting_period && (round >= (warmup_rounds_before_traning + _rounds_traning))
+					&& (round < ((warmup_rounds_before_traning + _rounds_traning) + _attack_window_length)) && (fixed_period_for_goal_load > 0)
+					&& send_misreport_flag)) {
 					System.out.println("up in here short");
-					// double threshold = 0.01; // *****
-					// double budget = 5e3;
 					U64 updated_load = U64.of(0);
 					Collections.sort(observed_loads);
-					// System.out.println("\robserved_loads size: " +
-					// String.valueOf(observed_loads.size()));
-					// updated_load = (float) (observed_loads
-					// .get(r4.nextInt((int) ((Math.ceil((double) (observed_loads.size() *
-					// threshold))) - 1))));
-					updated_load = observed_loads.get(r4.nextInt((int) (Math.ceil((double) (observed_loads.size() * threshold)))));
-					// if (policy == LEAST_LOADED) {
-					if (current_load.getValue() < observed_loads
-							.get((int) ((Math.ceil((double) (observed_loads.size() * threshold))) - 1)).getValue()) {
+					if (use_fixed_misreporting_val) {
+						updated_load = U64.of(fixed_misreport_val_for_goal_load);
+					} else {
+						updated_load = observed_loads
+						.get(r4.nextInt((int) (Math.ceil((double) (observed_loads.size() * threshold)))));
+						// updated_load = observed_loads
+						// 		.get((int) (Math.ceil((double) (observed_loads.size() * threshold)))-1);
+					}
+					
+					try {
+						FileWriter fwm = new FileWriter("./sdnlb-scripts/pylb-output/adversary-misreported-loads", true);
+						PrintWriter pwm = new PrintWriter(fwm);
+						pwm.println("adversary misreported load at [t=" + String.valueOf(curr_time_in_file) + "s]:" + String.valueOf(updated_load));
+						pwm.flush();
+						pwm.close();
+					} catch (IOException e) {
+						System.out.println("Error writing to misreported load file: "+ e.toString());
+					}
+
+					if (false) { //  still send the misreport so we get actual number of mis
 						System.out.println("didnt use updated load");
 						// membersBandwidth.put("member[" + String.valueOf(BAD_SWITCH) + "]",
 						// bad_switch_true_bw);
@@ -405,21 +508,35 @@ public class LBPool {
 						// num_misreports/(NUM_ROUNDS) = " + String.valueOf(num_misreports) + "/" +
 						// String.valueOf(NUM_ROUNDS) + " = " + String.format("%.3f", num_misreports *
 						// 1.0 / (NUM_ROUNDS)));
-						System.out.println("misreporting amount (of total): num_misreports/(round) = " + String.valueOf(num_misreports)
-								+ "/" + String.valueOf(round) + " = " + String.format("%.3f", num_misreports * 1.0 / (round)));
-						System.out.println("misreporting amount (during atk window): num_misreports/(_attack_window_length) = "
-								+ String.valueOf(num_misreports) + "/" + String.valueOf(_attack_window_length) + " = "
-								+ String.format("%.3f", num_misreports * 1.0 / (_attack_window_length)));
-						System.out.println("num_times_bad_switch_chosen_overall: " + String.valueOf(num_times_bad_switch_chosen_overall));
-						System.out.println("misreporting success: num_times_bad_switch_chosen_after_mis/num_misreports = "
-								+ String.valueOf(num_times_bad_switch_chosen_after_mis) + "/" + String.valueOf(num_misreports) + " = "
-								+ String.format("%.3f", num_times_bad_switch_chosen_after_mis * 1.0 / num_misreports));
+						System.out.println("misreporting amount (of total): num_misreports/(round) = "
+								+ String.valueOf(num_misreports) + "/" + String.valueOf(round) + " = "
+								+ String.format("%.3f", num_misreports * 1.0 / (round)));
 						System.out.println(
-								"Elapsed time: " + String.format("%.2f", (double) ((System.nanoTime() - start_time) / 1e9)) + " seconds");
+								"misreporting amount (during atk window): num_misreports/(_attack_window_length) = "
+										+ String.valueOf(num_misreports) + "/" + String.valueOf(_attack_window_length)
+										+ " = "
+										+ String.format("%.3f", num_misreports * 1.0 / (_attack_window_length)));
+						System.out.println("num_times_bad_switch_chosen_overall: "
+								+ String.valueOf(num_times_bad_switch_chosen_overall));
+						System.out
+								.println("misreporting success: num_times_bad_switch_chosen_after_mis/num_misreports = "
+										+ String.valueOf(num_times_bad_switch_chosen_after_mis) + "/"
+										+ String.valueOf(num_misreports) + " = " + String.format("%.3f",
+												num_times_bad_switch_chosen_after_mis * 1.0 / num_misreports));
+						System.out.println(
+								"misreporting success: num_times_bad_switch_outrightwin_after_mis/num_misreports = "
+										+ String.valueOf(num_times_bad_switch_outrightwin_after_mis) + "/"
+										+ String.valueOf(num_misreports) + " = " + String.format("%.3f",
+												num_times_bad_switch_outrightwin_after_mis * 1.0 / num_misreports));
+						System.out.println("Elapsed time: "
+								+ String.format("%.2f", (double) ((System.nanoTime() - start_time) / 1e9))
+								+ " seconds");
 
 						// membersBandwidth.put("member[" + String.valueOf(BAD_SWITCH) + "]",
 						// updated_load);
 						System.out.println("used updated load: " + updated_load.toString());
+						avg_under_report_amount = (avg_under_report_amount * (num_misreports - 1)
+								+ (current_load.getValue() - updated_load.getValue())) / num_misreports;
 						return updated_load;
 					}
 				}
@@ -433,23 +550,38 @@ public class LBPool {
 				// || (delayed_ur_wll_10 >= 1) || (delayed_ur_wlc_10 == 1)) {
 				if (((round > (warmup_rounds_before_traning + _rounds_traning))
 						&& (round < ((warmup_rounds_before_traning + _rounds_traning) + _attack_window_length))
-						&& ((round - round_training_over) % 10 == 0)) || (batch_flag > 0)) { // every 10th round after training over
-					// QB (1//18/2020: only check if training rounds over and between attack window
+						&& ((round - round_training_over) % AVG_LONG_FLOW_DUR == 0)) || (batch_flag > 0)) { // every 10th round after
+																								// training over
+					// only check if training rounds over and between attack window
 					System.out.println("up in here long");
-					// if (batch_flag < (batch_size-1)) {
-					// batch_flag++;
-					// System.out.println("delayed next");
-					// } else if (batch_flag == (batch_size-1)) {
-					// // return current_load; // only send batch once for now, so once it hits 2,
-					// just send current_load
-					// batch_flag = 0; // reset for next batch in 10s
-					// }
-					if (batch_flag == (batch_size - 1)) {
-						// return current_load; // only send batch once for now, so once it hits 2, just
-						// send current_load
-						batch_flag = 0; // reset for next batch in 10s
+
+					if (do_random_batch) { // only increment if used (should average out to batch_size during the slot)
+						do_misreport_random_batch = false;
+						if ((batch_flag == batch_size-1) || ((round - round_training_over) % AVG_LONG_FLOW_DUR == (AVG_LONG_FLOW_DUR-1))) { // already exhausted all batch_size misreports in the slot, OR reached the end of slot before could send all misreports
+							batch_flag = 0;
+							if (batch_random_gen.nextInt(101) <= (int)(random_batch_perc*100.0)) {
+								do_misreport_random_batch = true;
+							} else {
+								// dont do anything, try again next epoch
+								do_misreport_random_batch = false;
+							}
+						} else { // otherwise we are at the beginning or middle of a slot
+							if (batch_random_gen.nextInt(101) <= (int)(random_batch_perc*100.0)) {
+								batch_flag++; // increment the counter to get to batch size
+								do_misreport_random_batch = true;
+							} else {
+								// dont do anything, try again next epoch
+								do_misreport_random_batch = false;
+							}
+						}
 					} else {
-						batch_flag++;
+						if (batch_flag == (batch_size - 1)) {
+							// return current_load; // only send batch once for now, so once it hits 2, just
+							// send current_load
+							batch_flag = 0; // reset for next batch in 10s
+						} else {
+							batch_flag++;
+						}
 					}
 
 					if (round_training_over == 0) {
@@ -460,15 +592,32 @@ public class LBPool {
 					// double budget = 5e3;
 					U64 updated_load = U64.of(0);
 					Collections.sort(observed_loads);
-					// System.out.println("\robserved_loads size: " +
-					// String.valueOf(observed_loads.size()));
-					// updated_load = (float) (observed_loads
-					// .get(r4.nextInt((int) ((Math.ceil((double) (observed_loads.size() *
-					// threshold))) - 1))));
-					updated_load = observed_loads.get(r4.nextInt((int) (Math.ceil((double) (observed_loads.size() * threshold)))));
-					// if (policy == LEAST_LOADED) {
-					if (current_load.getValue() < observed_loads
-							.get((int) ((Math.ceil((double) (observed_loads.size() * threshold))) - 1)).getValue()) {
+					// updated_load = observed_loads
+					// 		.get(r4.nextInt((int) (Math.ceil((double) (observed_loads.size() * threshold)))));
+					
+					if (do_random_batch) {
+						if (do_misreport_random_batch) {
+							if (use_fixed_misreporting_val) {
+								updated_load = U64.of(fixed_misreport_val_for_goal_load);
+							} else {
+								updated_load = observed_loads
+								.get(r4.nextInt((int) (Math.ceil((double) (observed_loads.size() * threshold)))));
+								// updated_load = observed_loads
+								// 		.get((int) (Math.ceil((double) (observed_loads.size() * threshold)))-1);
+							}
+						}
+					} else {
+						if (use_fixed_misreporting_val) {
+							updated_load = U64.of(fixed_misreport_val_for_goal_load);
+						} else {
+							updated_load = observed_loads
+							.get(r4.nextInt((int) (Math.ceil((double) (observed_loads.size() * threshold)))));
+							// updated_load = observed_loads
+							// 		.get((int) (Math.ceil((double) (observed_loads.size() * threshold)))-1);
+						}
+					}
+
+					if (false) { // still send the misreport so we get actual number of mis
 						System.out.println("didnt use updated load");
 						// membersBandwidth.put("member[" + String.valueOf(BAD_SWITCH) + "]",
 						// bad_switch_true_bw);
@@ -541,17 +690,29 @@ public class LBPool {
 						// num_misreports/(NUM_ROUNDS) = " + String.valueOf(num_misreports) + "/" +
 						// String.valueOf(NUM_ROUNDS) + " = " + String.format("%.3f", num_misreports *
 						// 1.0 / (NUM_ROUNDS)));
-						System.out.println("misreporting amount (of total): num_misreports/(round) = " + String.valueOf(num_misreports)
-								+ "/" + String.valueOf(round) + " = " + String.format("%.3f", num_misreports * 1.0 / (round)));
-						System.out.println("misreporting amount (during atk window): num_misreports/(_attack_window_length) = "
-								+ String.valueOf(num_misreports) + "/" + String.valueOf(_attack_window_length) + " = "
-								+ String.format("%.3f", num_misreports * 1.0 / (_attack_window_length)));
-						System.out.println("num_times_bad_switch_chosen_overall: " + String.valueOf(num_times_bad_switch_chosen_overall));
-						System.out.println("misreporting success: num_times_bad_switch_chosen_after_mis/num_misreports = "
-								+ String.valueOf(num_times_bad_switch_chosen_after_mis) + "/" + String.valueOf(num_misreports) + " = "
-								+ String.format("%.3f", num_times_bad_switch_chosen_after_mis * 1.0 / num_misreports));
+						System.out.println("misreporting amount (of total): num_misreports/(round) = "
+								+ String.valueOf(num_misreports) + "/" + String.valueOf(round) + " = "
+								+ String.format("%.3f", num_misreports * 1.0 / (round)));
 						System.out.println(
-								"Elapsed time: " + String.format("%.2f", (double) ((System.nanoTime() - start_time) / 1e9)) + " seconds");
+								"misreporting amount (during atk window): num_misreports/(_attack_window_length) = "
+										+ String.valueOf(num_misreports) + "/" + String.valueOf(_attack_window_length)
+										+ " = "
+										+ String.format("%.3f", num_misreports * 1.0 / (_attack_window_length)));
+						System.out.println("num_times_bad_switch_chosen_overall: "
+								+ String.valueOf(num_times_bad_switch_chosen_overall));
+						System.out
+								.println("misreporting success: num_times_bad_switch_chosen_after_mis/num_misreports = "
+										+ String.valueOf(num_times_bad_switch_chosen_after_mis) + "/"
+										+ String.valueOf(num_misreports) + " = " + String.format("%.3f",
+												num_times_bad_switch_chosen_after_mis * 1.0 / num_misreports));
+						System.out.println(
+								"misreporting success: num_times_bad_switch_outrightwin_after_mis/num_misreports = "
+										+ String.valueOf(num_times_bad_switch_outrightwin_after_mis) + "/"
+										+ String.valueOf(num_misreports) + " = " + String.format("%.3f",
+												num_times_bad_switch_outrightwin_after_mis * 1.0 / num_misreports));
+						System.out.println("Elapsed time: "
+								+ String.format("%.2f", (double) ((System.nanoTime() - start_time) / 1e9))
+								+ " seconds");
 
 						// membersBandwidth.put("member[" + String.valueOf(BAD_SWITCH) + "]",
 						// updated_load);
@@ -563,23 +724,30 @@ public class LBPool {
 				}
 			}
 		}
-		return current_load;
+		return current_load; // for ATTACK_TYPE==3
 	}
 
 	// public String pickMember(IPClient client, HashMap<String,U64>
 	// membersBandwidth,HashMap<String,Short> membersWeight,HashMap<String, Short>
 	// memberStatus) {
 	public String pickMember(/* IPClient client, */ HashMap<String, U64> membersBandwidth,
-			HashMap<String, Short> memberStatus, int policy_unused, boolean new_round, long curr_time_in_file) { // ipclient not
-																																																																																																								// used,
-																																																																																																								// membersweight
-																																																																																																								// not used for
-																																																																																																								// statistics,
-																																																																																																								// and we assume
-																																																																																																								// all members
-																																																																																																								// are active
+			HashMap<String, Short> memberStatus, int policy_unused, boolean new_round, long curr_time_in_file) { // ipclient
+																													// not
+																													// used,
+																													// membersweight
+																													// not
+																													// used
+																													// for
+																													// statistics,
+																													// and
+																													// we
+																													// assume
+																													// all
+																													// members
+																													// are
+																													// active
 		if (new_round) {
-			if (start_time == 0) { // QB: start warmup and burst training
+			if (start_time == 0) { // start warmup and burst training
 				start_time = System.nanoTime();
 			}
 		}
@@ -595,50 +763,67 @@ public class LBPool {
 		// int WLC = 3; // weighted least-conn
 		// int R = 4; // random
 		// int RR = 5; // round-robin
-		// int policy = 1; // QB: using this now instead of the arg for easier switching
+		// int policy = 1; // using this now instead of the arg for easier switching
 		// int policy_on_multi_min = -1;
 
 		// System.out.println("adversary is member [" +
 		// String.valueOf(membersBandwidth.size()-1) + "]");
 		System.out.println("adversary is member [" + String.valueOf(membersBandwidth.size()) + "]");
-		if (new_round) {
-			// let adversary do stuff first; ONLY ON NEW COLLECTION ROUNDS, otherwise dont
-			// call this for just new clients
-			// System.out.println("adversary is member [" +
-			// String.valueOf(membersBandwidth.size()-1) + "]");
-			// System.out.println("this is it: " +
-			// String.valueOf(membersBandwidth.get(String.valueOf(membersBandwidth.size()-1))));
-			System.out.println("this is it: " + String.valueOf(membersBandwidth.get(String.valueOf(membersBandwidth.size()))));
-			System.out.println(membersBandwidth);
-			// U64 load =
-			// adversary_run(membersBandwidth.get(String.valueOf(membersBandwidth.size()-1)),
-			// membersBandwidth.size(), policy); // QB: get last one
-			U64 load = adversary_run(membersBandwidth.get(String.valueOf(membersBandwidth.size())), membersBandwidth.size(),
-					policy, curr_time_in_file);
-			if (load == null) {
-				System.out.println("load is null");
-				return null;
+		System.out.println("new_round:" + String.valueOf(new_round));
+		if (ATTACK_TYPE==1 || ATTACK_TYPE==2) {
+			if (new_round) {
+				// let adversary do stuff first; ONLY ON NEW COLLECTION ROUNDS, otherwise dont
+				// call this for just new clients
+				// System.out.println("adversary is member [" +
+				// String.valueOf(membersBandwidth.size()-1) + "]");
+				// System.out.println("this is it: " +
+				// String.valueOf(membersBandwidth.get(String.valueOf(membersBandwidth.size()-1))));
+				System.out.println(
+						"this is it: " + String.valueOf(membersBandwidth.get(String.valueOf(membersBandwidth.size()))));
+				System.out.println(membersBandwidth);
+				// U64 load =
+				// adversary_run(membersBandwidth.get(String.valueOf(membersBandwidth.size()-1)),
+				// membersBandwidth.size(), policy); // get last one
+				U64 load = adversary_run(membersBandwidth.get(String.valueOf(membersBandwidth.size())),
+						membersBandwidth.size(), policy, curr_time_in_file);
+				if (load == null) {
+					System.out.println("load is null");
+					return null;
+				}
+				// membersBandwidth.put(String.valueOf(membersBandwidth.size()-1), load);
+				membersBandwidth.put(String.valueOf(membersBandwidth.size()), load);
+				adversary_current_load = load;
+				if ((ATTACK_TYPE == 3)
+						&& (adversary_current_load != membersBandwidth.get(String.valueOf(membersBandwidth.size())))) {
+					System.out.println("adversary_current_load: "+String.valueOf(adversary_current_load));
+					System.out.println("memberBW for adversary: "+String.valueOf(membersBandwidth.get(String.valueOf(membersBandwidth.size()))));
+					System.out.println("attack_type is 3 but loads dont match");
+				}
+				// System.out.println("this is after: " +
+				// String.valueOf(membersBandwidth.get(String.valueOf(membersBandwidth.size()-1))));
+				System.out.println(
+						"this is after: " + String.valueOf(membersBandwidth.get(String.valueOf(membersBandwidth.size()))));
+				System.out.println("and this is all: " + membersBandwidth.toString());
+				round++;
+			} else {
+				if ((ATTACK_TYPE == 3)
+						&& (adversary_current_load != membersBandwidth.get(String.valueOf(membersBandwidth.size())))) {
+					System.out.println("adversary_current_load: "+String.valueOf(adversary_current_load));
+					System.out.println("memberBW for adversary: "+String.valueOf(membersBandwidth.get(String.valueOf(membersBandwidth.size()))));
+					System.out.println("attack_type is 3 but loads dont match");
+				}
+				membersBandwidth.put(String.valueOf(membersBandwidth.size()), adversary_current_load); // gets updated
+																										// every
+																										// new_round
 			}
-			// membersBandwidth.put(String.valueOf(membersBandwidth.size()-1), load);
-			membersBandwidth.put(String.valueOf(membersBandwidth.size()), load);
-			adversary_current_load = load;
-			// System.out.println("this is after: " +
-			// String.valueOf(membersBandwidth.get(String.valueOf(membersBandwidth.size()-1))));
-			System.out
-					.println("this is after: " + String.valueOf(membersBandwidth.get(String.valueOf(membersBandwidth.size()))));
-			System.out.println("and this is all: " + membersBandwidth.toString());
-			round++; // QB: moved this here to only update whenver its a new round; attack looked
-												// like it wasnt lasting the full 600 for some reason
-		} else {
-			membersBandwidth.put(String.valueOf(membersBandwidth.size()), adversary_current_load); // gets updated every
-																																																																																										// new_round
 		}
 
 		if (members.size() > 0) {
 			if (lbMethod == STATISTICS && !membersBandwidth.isEmpty() && membersBandwidth.values() != null) {
 				ArrayList<String> poolMembersId = new ArrayList<String>();
 				// Get the members that belong to this pool and the statistics for them
-				System.out.println("membersBandwidth.keySet().size(): " + String.valueOf(membersBandwidth.keySet().size()));
+				System.out.println(
+						"membersBandwidth.keySet().size(): " + String.valueOf(membersBandwidth.keySet().size()));
 				for (String memberId : membersBandwidth.keySet()) {
 					for (int i = 0; i < members.size(); i++) {
 						// if(LoadBalancer.isMonitoringEnabled && !monitors.isEmpty() &&
@@ -660,7 +845,7 @@ public class LBPool {
 					}
 				}
 
-				// // QB: testing
+				
 				// return "1";
 
 				// return the member which has the minimum bandwidth usage, out of this pool
@@ -669,18 +854,14 @@ public class LBPool {
 					System.out.println("poolMembersId not empty");
 					System.out.println(poolMembersId.toString());
 
-					if (new_round) { // edit (1/30/2020): only update the loads with weighting on a new_round; was
-																						// prob just repeating same weight for every flow (100 or 1000) before the next
-																						// new_round, essentially driving the load toward membersBandwidth faster
-																						// (basically makes the hisorical load obsolete); this will drive the attackers
-																						// load to 0 (or within the 1 percentile) before the next new_round, so the
-																						// second underreport is successful (?)
+					if (new_round) { 
 						if ((policy == WLC) || (policy == WLL)) {
 							float weight_for_latest = (float) 0.5;
 							U64 new_load = U64.of((long) 0);
 							for (String memberId : membersBandwidth.keySet()) {
 								if (membersBandwidth_last.keySet().contains(memberId)) {
-									new_load = U64.of((long) ((weight_for_latest * membersBandwidth_last.get(memberId).getValue())
+									new_load = U64.of((long) ((weight_for_latest
+											* membersBandwidth_last.get(memberId).getValue())
 											+ ((1 - weight_for_latest) * membersBandwidth.get(memberId).getValue())));
 									// membersBandwidth.put(memberId, new_load);
 									// membersBandwidth_last.put(memberId, new_load);
@@ -713,23 +894,32 @@ public class LBPool {
 						// if ("9".compareTo(poolMembersId.get(j)) == 0) {
 						// if ("10".compareTo(poolMembersId.get(j)) == 0) {
 						if (String.valueOf(membersBandwidth.size()).compareTo(poolMembersId.get(j)) == 0) {
-							System.out
-									.println("setting attacker bw value to: " + String.valueOf(membersBandwidth.get(poolMembersId.get(j))));
+							System.out.println("setting attacker bw value to: "
+									+ String.valueOf(membersBandwidth.get(poolMembersId.get(j))));
 							if (new_round) {
 								adversary_loads_overall.add(membersBandwidth.get(poolMembersId.get(j)));
 
 								if (TRAFFIC_TYPE == SHORT_FLOWS_TRAFFIC) {
-									if (((bursts_observed >= _burst_training_window + 1) && (round > round_training_over)
-											&& (round < (round_training_over + _attack_window_length)) && (period_for_goal_load > 0))) {
+									if (((bursts_observed >= _burst_training_window + 1)
+											&& (round > round_training_over)
+											&& (round < (round_training_over + _attack_window_length))
+											&& (period_for_goal_load > 0))) {
 										// && (round % period_for_goal_load == 0))) {
 										adversary_loads_during_atk.add(membersBandwidth.get(poolMembersId.get(j)));
 									}
 								} else if (TRAFFIC_TYPE == LONG_FLOWS_TRAFFIC) {
 									if ((round > (warmup_rounds_before_traning + _rounds_traning))
-											&& (round < ((warmup_rounds_before_traning + _rounds_traning) + _attack_window_length))) {
-										// if (((bursts_observed >= _burst_training_window + 1) && (round > round_training_over)
-										// 		&& (round < (round_training_over + _attack_window_length)) && (period_for_goal_load > 0))) {
-											if (((round > round_training_over) && (round < (round_training_over + _attack_window_length)) && (period_for_goal_load > 0))) { // shouldnt need bursts_observed for long flows; was causing weird problems in the load dist plot
+											&& (round < ((warmup_rounds_before_traning + _rounds_traning)
+													+ _attack_window_length))) {
+										// if (((bursts_observed >= _burst_training_window + 1) && (round >
+										// round_training_over)
+										// && (round < (round_training_over + _attack_window_length)) &&
+										// (period_for_goal_load > 0))) {
+										if (((round > round_training_over)
+												&& (round < (round_training_over + _attack_window_length))
+												&& (period_for_goal_load > 0))) { // shouldnt need bursts_observed for
+																					// long flows; was causing weird
+																					// problems in the load dist plot
 											// && (round % period_for_goal_load == 0))) {
 											adversary_loads_during_atk.add(membersBandwidth.get(poolMembersId.get(j)));
 										}
@@ -747,28 +937,40 @@ public class LBPool {
 					System.out.println("PERCENTILE: " + String.valueOf(PERCENTILE));
 					System.out.println("bursts_observed: " + String.valueOf(bursts_observed));
 					System.out.println("period_for_goal_load: " + String.valueOf(period_for_goal_load));
+					System.out.println("use_fixed_misreporting_period: " + String.valueOf(use_fixed_misreporting_period));
+					System.out.println("fixed_period_for_goal_load: " + String.valueOf(fixed_period_for_goal_load));
 					System.out.println("round: " + String.valueOf(round));
 					System.out.println("avg_burst_size: " + String.valueOf(avg_burst_size / 8.0 / 1e3) + " KB");
 					System.out.println("GOAL_LOAD: " + String.valueOf(GOAL_LOAD / 8.0 / 1e3) + " KB");
-					System.out.println("misreporting amount (of total): num_misreports/(round) = " + String.valueOf(num_misreports)
-							+ "/" + String.valueOf(round) + " = " + String.format("%.3f", num_misreports * 1.0 / (round)));
-					System.out.println("misreporting amount (during atk window): num_misreports/(_attack_window_length) = "
-							+ String.valueOf(num_misreports) + "/" + String.valueOf(_attack_window_length) + " = "
-							+ String.format("%.3f", num_misreports * 1.0 / (_attack_window_length)));
-					System.out.println("num_times_bad_switch_chosen_overall: " + String.valueOf(num_times_bad_switch_chosen_overall));
+					System.out.println("misreporting amount (of total): num_misreports/(round) = "
+							+ String.valueOf(num_misreports) + "/" + String.valueOf(round) + " = "
+							+ String.format("%.3f", num_misreports * 1.0 / (round)));
+					System.out.println(
+							"misreporting amount (during atk window): num_misreports/(_attack_window_length) = "
+									+ String.valueOf(num_misreports) + "/" + String.valueOf(_attack_window_length)
+									+ " = " + String.format("%.3f", num_misreports * 1.0 / (_attack_window_length)));
+					System.out.println("num_times_bad_switch_chosen_overall: "
+							+ String.valueOf(num_times_bad_switch_chosen_overall));
 					System.out.println("misreporting success: num_times_bad_switch_chosen_after_mis/num_misreports = "
-							+ String.valueOf(num_times_bad_switch_chosen_after_mis) + "/" + String.valueOf(num_misreports) + " = "
+							+ String.valueOf(num_times_bad_switch_chosen_after_mis) + "/"
+							+ String.valueOf(num_misreports) + " = "
 							+ String.format("%.3f", num_times_bad_switch_chosen_after_mis * 1.0 / num_misreports));
-					System.out.println("avg_under_report_amount: " + String.valueOf(avg_under_report_amount / 1e3) + " Kb");
+					System.out.println(
+							"misreporting success: num_times_bad_switch_outrightwin_after_mis/num_misreports = "
+									+ String.valueOf(num_times_bad_switch_outrightwin_after_mis) + "/"
+									+ String.valueOf(num_misreports) + " = " + String.format("%.3f",
+											num_times_bad_switch_outrightwin_after_mis * 1.0 / num_misreports));
+					System.out.println(
+							"avg_under_report_amount: " + String.valueOf(avg_under_report_amount / 1e3) + " Kb");
 					if (observed_loads.size() > 0) {
 						if (temp_arr != null && temp_arr.length > 0) {
 							System.out.println("burst threshold: "
-									+ String.valueOf(temp_arr[(int) (PERCENTILE * observed_loads.size())] / 8.0 / 1e3) + " KB");
+									+ String.valueOf(temp_arr[(int) (PERCENTILE * observed_loads.size())] / 8.0 / 1e3)
+									+ " KB");
 						}
-						System.out.println("low threshold load: " + String
-								.valueOf(observed_loads.get((int) ((Math.ceil((double) (observed_loads.size() * threshold))) - 1)).getValue()
-										/ 8.0 / 1e3)
-								+ " KB");
+						System.out.println("low threshold load: " + String.valueOf(observed_loads
+								.get((int) ((Math.ceil((double) (observed_loads.size() * threshold))) - 1)).getValue()
+								/ 8.0 / 1e3) + " KB");
 					}
 
 					// ########### more prints
@@ -825,35 +1027,6 @@ public class LBPool {
 					// #################################################################################
 					// #################################################################################
 					// #################################################################################
-					// size of the prev list is half of the number of available members
-					// int sizeOfPrevPicked = bandwidthValues.size()/2;
-
-					// if (membersWithMin.size() > 1) {
-					// System.err.println("Multiple members with min: " + String.valueOf(minBW));
-					// }
-
-					// // memberToPick = membersWithMin.get(rm.nextInt(membersWithMin.size())); //
-					// ***** remove this; pick from above code
-
-					// // Remove previously picked members from being eligible for being picked now
-					// for (Iterator<String> it = membersWithMin.iterator(); it.hasNext();){
-					// String memberMin = it.next();
-					// if(prevPicked.contains(memberMin)){
-					// it.remove();
-					// }
-					// }
-					// // Keep the previously picked list to a size based on the members of the pool
-					// if(prevPicked.size() > sizeOfPrevPicked) {
-					// // System.err.println("adjust prevPicked");
-					// prevPicked.remove(prevPicked.size()-1);
-					// }
-
-					// // If there is only one member with min BW value and membersWithMin is empty
-					// if(membersWithMin.isEmpty()){
-					// memberToPick = prevPicked.get(prevPicked.size()-1); // means that the min
-					// member has been prevs picked
-					// }else
-					// memberToPick = membersWithMin.get(0);
 
 					// prevPicked.add(0, memberToPick); //set the first memberId of prevPicked to be
 					// // the last member picked
@@ -867,6 +1040,11 @@ public class LBPool {
 						if (misreported) {
 							num_times_bad_switch_chosen_after_mis++;
 							misreported = false;
+							if (membersWithMin.size() == 1) { // if only the adversary was picked (bandwidthValues gets
+																// updated every new_round so this should be correct for
+																// any epoch)
+								num_times_bad_switch_outrightwin_after_mis++;
+							}
 						}
 					}
 					return memberToPick;

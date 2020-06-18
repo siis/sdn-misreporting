@@ -1,0 +1,13 @@
+# build and run controller
+ant
+sudo java -jar target/floodlight.jar > cont.log
+
+# start network, pingall, setup load balancing pool, start flooder
+sudo python pytestnet.py 10 10.0.0.100
+pingall
+rm pylb-output/lb-decisions
+./pylb.sh 10
+uph cd flooderc; make clean; make; ./main
+
+# print progress
+cat ../cont.log | tail -50

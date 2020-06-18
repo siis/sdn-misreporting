@@ -61,27 +61,24 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 	private static final HashMap<NodePortTuple, SwitchPortBandwidth> portStats = new HashMap<NodePortTuple, SwitchPortBandwidth>();
 	private static final HashMap<NodePortTuple, SwitchPortBandwidth> tentativePortStats = new HashMap<NodePortTuple, SwitchPortBandwidth>();
 
-	private static final HashMap<Pair<Match,DatapathId>, FlowRuleStats> flowStats = new HashMap<Pair<Match,DatapathId>,FlowRuleStats>();
-	
+	private static final HashMap<Pair<Match, DatapathId>, FlowRuleStats> flowStats = new HashMap<Pair<Match, DatapathId>, FlowRuleStats>();
+
 	private static final HashMap<NodePortTuple, PortDesc> portDesc = new HashMap<NodePortTuple, PortDesc>();
 
-
-
 	/**
-	 * Run periodically to collect all port statistics. This only collects
-	 * bandwidth stats right now, but it could be expanded to record other
-	 * information as well. The difference between the most recent and the
-	 * current RX/TX bytes is used to determine the "elapsed" bytes. A 
-	 * timestamp is saved each time stats results are saved to compute the
-	 * bits per second over the elapsed time. There isn't a better way to
-	 * compute the precise bandwidth unless the switch were to include a
-	 * timestamp in the stats reply message, which would be nice but isn't
-	 * likely to happen. It would be even better if the switch recorded 
-	 * bandwidth and reported bandwidth directly.
+	 * Run periodically to collect all port statistics. This only collects bandwidth
+	 * stats right now, but it could be expanded to record other information as
+	 * well. The difference between the most recent and the current RX/TX bytes is
+	 * used to determine the "elapsed" bytes. A timestamp is saved each time stats
+	 * results are saved to compute the bits per second over the elapsed time. There
+	 * isn't a better way to compute the precise bandwidth unless the switch were to
+	 * include a timestamp in the stats reply message, which would be nice but isn't
+	 * likely to happen. It would be even better if the switch recorded bandwidth
+	 * and reported bandwidth directly.
 	 * 
-	 * Stats are not reported unless at least two iterations have occurred
-	 * for a single switch's reply. This must happen to compare the byte 
-	 * counts and to get an elapsed time.
+	 * Stats are not reported unless at least two iterations have occurred for a
+	 * single switch's reply. This must happen to compare the byte counts and to get
+	 * an elapsed time.
 	 * 
 	 * @author Ryan Izard, ryan.izard@bigswitch.com, rizard@g.clemson.edu
 	 *
@@ -91,8 +88,9 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 		@Override
 		public void run() {
 			synchronized (portStats) { // added this for the 1s just in case
-				log.info("QB: Running port stats collection...");
-				Map<DatapathId, List<OFStatsReply>> replies = getSwitchStatistics(switchService.getAllSwitchDpids(), OFStatsType.PORT);
+				log.info("Running port stats collection...");
+				Map<DatapathId, List<OFStatsReply>> replies = getSwitchStatistics(switchService.getAllSwitchDpids(),
+						OFStatsType.PORT);
 				log.info("got replies; reply len: " + String.valueOf(replies.size()));
 				// log.info("replies: " + replies.toString());
 				for (Entry<DatapathId, List<OFStatsReply>> e : replies.entrySet()) {
@@ -101,7 +99,7 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 						for (OFPortStatsEntry pse : psr.getEntries()) {
 							NodePortTuple npt = new NodePortTuple(e.getKey(), pse.getPortNo());
 							SwitchPortBandwidth spb;
-							if (portStats.containsKey(npt) || tentativePortStats.containsKey(npt)) { // QB: hmm some reason i think this always goes to else case and portStats never gets filled (prints empty)
+							if (portStats.containsKey(npt) || tentativePortStats.containsKey(npt)) {
 								if (portStats.containsKey(npt)) { /* update */
 									spb = portStats.get(npt);
 								} else if (tentativePortStats.containsKey(npt)) { /* finish */
@@ -112,7 +110,7 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 									return;
 								}
 
-								// *****QB (12/31): need to prob somehow update portStats here properly for LC/WLC
+	
 								/* Get counted bytes over the elapsed period. Check for counter overflow. */
 								U64 rxBytesCounted;
 								U64 txBytesCounted;
@@ -131,47 +129,36 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 									txBytesCounted = pse.getTxBytes().subtract(spb.getPriorByteValueTx());
 								}
 								long speed = getSpeed(npt);
-								double timeDifSec = ((System.nanoTime() - spb.getStartTime_ns()) * 1.0 / 1000000) / MILLIS_PER_SEC;
-								// maybe add in here if its > start_time, dont update it; that way we can have a 1s timeout? hmmm...
-								// log.info("QB: [" + e.getKey() + "] has rxbytes of [" + pse.getRxBytes() + "], elapsed bytes of [" + String.valueOf(rxBytesCounted) + "] over timeDifSec [" + String.valueOf(timeDifSec) +"s], and [" + String.valueOf(U64.ofRaw(Math.round((rxBytesCounted.getValue() * BITS_PER_BYTE) / timeDifSec))) + "] bps, on port [" + String.valueOf(npt.getPortId()) + "]");
-								// System.out.println("curr: " + String.valueOf(System.nanoTime()));
-								// System.out.println("start: " + String.valueOf(spb.getStartTime_ns()));
-								// System.out.println("curr-start: " + String.valueOf((System.nanoTime()-spb.getStartTime_ns())/1000000000.0) + "s");
-								// if (System.nanoTime() < (spb.getStartTime_ns()+1500000000)) { // only update if the reply is not too old
-								// log.info("QB: [" + e.getKey() + "] has txbytes of [" + pse.getTxBytes() + "], elapsed bytes of [" + String.valueOf(txBytesCounted) + "] over timeDifSec [" + String.valueOf(timeDifSec) +"s], and [" + String.valueOf(U64.ofRaw(Math.round((txBytesCounted.getValue() * BITS_PER_BYTE) / timeDifSec))) + "] bps, on port [" + String.valueOf(npt.getPortId()) + "]");
+								double timeDifSec = ((System.nanoTime() - spb.getStartTime_ns()) * 1.0 / 1000000)
+										/ MILLIS_PER_SEC;
 
-        int policy = 0;
-        if ((policy == 0) || (policy == 1)) { // LL/WLL
-         System.out.println("policy in here (LL/WLL) is: " + String.valueOf(policy));
-         portStats.put(npt, SwitchPortBandwidth.of(npt.getNodeId(), npt.getPortId(), 
-         U64.ofRaw(speed),
-         U64.ofRaw(Math.round((rxBytesCounted.getValue() * BITS_PER_BYTE) / timeDifSec)),
-         U64.ofRaw(Math.round((txBytesCounted.getValue() * BITS_PER_BYTE) / timeDifSec)),
-         pse.getRxBytes(), pse.getTxBytes())
-         );
-        } else if ((policy == 2) || (policy == 3)) { // LC/WLC (divide by bytes/pkt to get # pkts, which we approx as # flows)
+								int policy = 0;
+								if ((policy == 0) || (policy == 1)) { // LL/WLL
+									System.out.println("policy in here (LL/WLL) is: " + String.valueOf(policy));
+									portStats.put(npt,
+											SwitchPortBandwidth.of(npt.getNodeId(), npt.getPortId(), U64.ofRaw(speed),
+													U64.ofRaw(Math.round(
+															(rxBytesCounted.getValue() * BITS_PER_BYTE) / timeDifSec)),
+													U64.ofRaw(Math.round(
+															(txBytesCounted.getValue() * BITS_PER_BYTE) / timeDifSec)),
+													pse.getRxBytes(), pse.getTxBytes()));
+								} else if ((policy == 2) || (policy == 3)) { // LC/WLC (divide by bytes/pkt to get #
+																				// pkts, which we approx as # flows)
 									System.out.println("policy in here (LC/WLC) is: " + String.valueOf(policy));
-									// int avg_pkt_size = 1500; // or 30, or 80, or 60
-									// int avg_pkt_size = 1487; // or 30, or 80, or 60
-									int avg_pkt_size = 1200; // or 30, or 80, or 60
-         portStats.put(npt, SwitchPortBandwidth.of(npt.getNodeId(), npt.getPortId(), 
-         U64.ofRaw(speed),
-         U64.ofRaw(Math.round((rxBytesCounted.getValue()/avg_pkt_size) / timeDifSec)),
-         U64.ofRaw(Math.round((txBytesCounted.getValue()/avg_pkt_size) / timeDifSec)),
-         pse.getRxBytes(), pse.getTxBytes())
-         );
-        }
-								// portStats.put(npt, SwitchPortBandwidth.of(npt.getNodeId(), npt.getPortId(), 
-								// 		U64.ofRaw(speed),
-								// 		U64.ofRaw(Math.round((rxBytesCounted.getValue() * BITS_PER_BYTE) / timeDifSec)),
-								// 		U64.ofRaw(Math.round((txBytesCounted.getValue() * BITS_PER_BYTE) / timeDifSec)),
-								// 		pse.getRxBytes(), pse.getTxBytes())
-								// 		);
-								// }
+									int avg_pkt_size = 1500;
+									portStats.put(npt,
+											SwitchPortBandwidth.of(npt.getNodeId(), npt.getPortId(), U64.ofRaw(speed),
+													U64.ofRaw((long)Math.ceil(
+															(rxBytesCounted.getValue() * 1.0 / avg_pkt_size) / timeDifSec)),
+													U64.ofRaw((long)Math.ceil(
+															(txBytesCounted.getValue() * 1.0 / avg_pkt_size) / timeDifSec)),
+													pse.getRxBytes(), pse.getTxBytes()));
+								}
 
 							} else { /* initialize */
 								// log.info("tentative: " + tentativePortStats.toString());
-								tentativePortStats.put(npt, SwitchPortBandwidth.of(npt.getNodeId(), npt.getPortId(), U64.ZERO, U64.ZERO, U64.ZERO, pse.getRxBytes(), pse.getTxBytes()));
+								tentativePortStats.put(npt, SwitchPortBandwidth.of(npt.getNodeId(), npt.getPortId(),
+										U64.ZERO, U64.ZERO, U64.ZERO, pse.getRxBytes(), pse.getTxBytes()));
 							}
 						}
 					}
@@ -183,33 +170,35 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 			IOFSwitch sw = switchService.getSwitch(npt.getNodeId());
 			long speed = 0;
 
-			if(sw == null) return speed; /* could have disconnected; we'll assume zero-speed then */
-			if(sw.getPort(npt.getPortId()) == null) return speed;
+			if (sw == null)
+				return speed; /* could have disconnected; we'll assume zero-speed then */
+			if (sw.getPort(npt.getPortId()) == null)
+				return speed;
 
 			/* getCurrSpeed() should handle different OpenFlow Version */
 			OFVersion detectedVersion = sw.getOFFactory().getVersion();
-			switch(detectedVersion){
-			case OF_10:
-				log.debug("Port speed statistics not supported in OpenFlow 1.0");
-				break;
+			switch (detectedVersion) {
+				case OF_10:
+					log.debug("Port speed statistics not supported in OpenFlow 1.0");
+					break;
 
-			case OF_11:
-			case OF_12:
-			case OF_13:
-				speed = sw.getPort(npt.getPortId()).getCurrSpeed();
-				break;
+				case OF_11:
+				case OF_12:
+				case OF_13:
+					speed = sw.getPort(npt.getPortId()).getCurrSpeed();
+					break;
 
-			case OF_14:
-			case OF_15:
-				for(OFPortDescProp p : sw.getPort(npt.getPortId()).getProperties()){
-					if( p.getType() == 0 ){ /* OpenFlow 1.4 and OpenFlow 1.5 will return zero */
-						speed = ((OFPortDescPropEthernet) p).getCurrSpeed();
+				case OF_14:
+				case OF_15:
+					for (OFPortDescProp p : sw.getPort(npt.getPortId()).getProperties()) {
+						if (p.getType() == 0) { /* OpenFlow 1.4 and OpenFlow 1.5 will return zero */
+							speed = ((OFPortDescPropEthernet) p).getCurrSpeed();
+						}
 					}
-				}
-				break;
+					break;
 
-			default:
-				break;
+				default:
+					break;
 			}
 
 			return speed;
@@ -225,25 +214,22 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 		@Override
 		public void run() {
 			flowStats.clear(); // to clear expired flows
-			Map<DatapathId, List<OFStatsReply>> replies = getSwitchStatistics(switchService.getAllSwitchDpids(), OFStatsType.FLOW);
+			Map<DatapathId, List<OFStatsReply>> replies = getSwitchStatistics(switchService.getAllSwitchDpids(),
+					OFStatsType.FLOW);
 			for (Entry<DatapathId, List<OFStatsReply>> e : replies.entrySet()) {
 				IOFSwitch sw = switchService.getSwitch(e.getKey());
 				for (OFStatsReply r : e.getValue()) {
 					OFFlowStatsReply psr = (OFFlowStatsReply) r;
 					for (OFFlowStatsEntry pse : psr.getEntries()) {
-						if(sw.getOFFactory().getVersion().compareTo(OFVersion.OF_15) == 0){
+						if (sw.getOFFactory().getVersion().compareTo(OFVersion.OF_15) == 0) {
 							log.warn("Flow Stats not supported in OpenFlow 1.5.");
 
 						} else {
-							Pair<Match, DatapathId> pair = new Pair<Match,DatapathId>(pse.getMatch(),e.getKey());
-							flowStats.put(pair,FlowRuleStats.of(
-									e.getKey(),
-									pse.getByteCount(),
-									pse.getPacketCount(),
-									pse.getPriority(),
-									pse.getHardTimeout(),
-									pse.getIdleTimeout(),
-									pse.getDurationSec()));
+							Pair<Match, DatapathId> pair = new Pair<Match, DatapathId>(pse.getMatch(), e.getKey());
+							flowStats.put(pair,
+									FlowRuleStats.of(e.getKey(), pse.getByteCount(), pse.getPacketCount(),
+											pse.getPriority(), pse.getHardTimeout(), pse.getIdleTimeout(),
+											pse.getDurationSec()));
 						}
 					}
 				}
@@ -251,36 +237,31 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 		}
 	}
 
-	
 	/**
-	 *  Run periodically to collect port description from every switch and port, so it is possible to know its state and configuration.
-	 * Used in Load balancer to determine if a port is enabled.
+	 * Run periodically to collect port description from every switch and port, so
+	 * it is possible to know its state and configuration. Used in Load balancer to
+	 * determine if a port is enabled.
 	 */
 	private class PortDescCollector implements Runnable {
 		@Override
 		public void run() {
-			Map<DatapathId, List<OFStatsReply>> replies = getSwitchStatistics(switchService.getAllSwitchDpids(), OFStatsType.PORT_DESC);
+			Map<DatapathId, List<OFStatsReply>> replies = getSwitchStatistics(switchService.getAllSwitchDpids(),
+					OFStatsType.PORT_DESC);
 			for (Entry<DatapathId, List<OFStatsReply>> e : replies.entrySet()) {
 				for (OFStatsReply r : e.getValue()) {
-					OFPortDescStatsReply psr = (OFPortDescStatsReply) r;	
+					OFPortDescStatsReply psr = (OFPortDescStatsReply) r;
 					for (OFPortDesc pse : psr.getEntries()) {
 						NodePortTuple npt = new NodePortTuple(e.getKey(), pse.getPortNo());
-						portDesc.put(npt,PortDesc.of(e.getKey(),
-								pse.getPortNo(),
-								pse.getName(),
-								pse.getState(),
-								pse.getConfig(),
-								pse.isEnabled()));						
+						portDesc.put(npt, PortDesc.of(e.getKey(), pse.getPortNo(), pse.getName(), pse.getState(),
+								pse.getConfig(), pse.isEnabled()));
 					}
 				}
 			}
 		}
 	}
 
-
 	/**
-	 * Single thread for collecting switch statistics and
-	 * containing the reply.
+	 * Single thread for collecting switch statistics and containing the reply.
 	 * 
 	 * @author Ryan Izard, ryan.izard@bigswitch.com, rizard@g.clemson.edu
 	 *
@@ -316,24 +297,21 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 
 	@Override
 	public Collection<Class<? extends IFloodlightService>> getModuleServices() {
-		Collection<Class<? extends IFloodlightService>> l =
-				new ArrayList<Class<? extends IFloodlightService>>();
+		Collection<Class<? extends IFloodlightService>> l = new ArrayList<Class<? extends IFloodlightService>>();
 		l.add(IStatisticsService.class);
 		return l;
 	}
 
 	@Override
 	public Map<Class<? extends IFloodlightService>, IFloodlightService> getServiceImpls() {
-		Map<Class<? extends IFloodlightService>, IFloodlightService> m =
-				new HashMap<Class<? extends IFloodlightService>, IFloodlightService>();
+		Map<Class<? extends IFloodlightService>, IFloodlightService> m = new HashMap<Class<? extends IFloodlightService>, IFloodlightService>();
 		m.put(IStatisticsService.class, this);
 		return m;
 	}
 
 	@Override
 	public Collection<Class<? extends IFloodlightService>> getModuleDependencies() {
-		Collection<Class<? extends IFloodlightService>> l =
-				new ArrayList<Class<? extends IFloodlightService>>();
+		Collection<Class<? extends IFloodlightService>> l = new ArrayList<Class<? extends IFloodlightService>>();
 		l.add(IOFSwitchService.class);
 		l.add(IThreadPoolService.class);
 		l.add(IRestApiService.class);
@@ -342,8 +320,7 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 	}
 
 	@Override
-	public void init(FloodlightModuleContext context)
-			throws FloodlightModuleException {
+	public void init(FloodlightModuleContext context) throws FloodlightModuleException {
 		switchService = context.getServiceImpl(IOFSwitchService.class);
 		threadPoolService = context.getServiceImpl(IThreadPoolService.class);
 		restApiService = context.getServiceImpl(IRestApiService.class);
@@ -370,15 +347,15 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 	}
 
 	@Override
-	public void startUp(FloodlightModuleContext context)
-			throws FloodlightModuleException {
+	public void startUp(FloodlightModuleContext context) throws FloodlightModuleException {
 		restApiService.addRestletRoutable(new SwitchStatisticsWebRoutable());
 		debugCounterService.registerModule("statistics");
 		if (isEnabled) {
 			startStatisticsCollection();
 		}
-		
-		counterPacketOut = debugCounterService.registerCounter("statistics", "packet-outs-written", "Packet outs written by the StatisticsCollector", MetaData.WARN);
+
+		counterPacketOut = debugCounterService.registerCounter("statistics", "packet-outs-written",
+				"Packet outs written by the StatisticsCollector", MetaData.WARN);
 	}
 
 	/*
@@ -390,35 +367,33 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 		portStatsInterval = period;
 		return "{\"status\" : \"Port period changed to " + period + "\"}";
 	}
-	
+
 	@Override
 	public String setFlowStatsPeriod(int period) {
 		flowStatsInterval = period;
 		return "{\"status\" : \"Flow period changed to " + period + "\"}";
 	}
-	
-	
+
 	@Override
 	public Map<NodePortTuple, PortDesc> getPortDesc() {
 		return Collections.unmodifiableMap(portDesc);
 	}
-	
+
 	@Override
 	public PortDesc getPortDesc(DatapathId dpid, OFPort port) {
-		return portDesc.get(new NodePortTuple(dpid,port));
+		return portDesc.get(new NodePortTuple(dpid, port));
 	}
-	
-	
+
 	@Override
-	public Map<Pair<Match, DatapathId>, FlowRuleStats> getFlowStats(){		 
+	public Map<Pair<Match, DatapathId>, FlowRuleStats> getFlowStats() {
 		return Collections.unmodifiableMap(flowStats);
 	}
 
 	@Override
-	public Set<FlowRuleStats> getFlowStats(DatapathId dpid){
+	public Set<FlowRuleStats> getFlowStats(DatapathId dpid) {
 		Set<FlowRuleStats> frs = new HashSet<FlowRuleStats>();
-		for(Pair<Match,DatapathId> pair: flowStats.keySet()){
-			if(pair.getValue().equals(dpid))
+		for (Pair<Match, DatapathId> pair : flowStats.keySet()) {
+			if (pair.getValue().equals(dpid))
 				frs.add(flowStats.get(pair));
 		}
 		return frs;
@@ -442,7 +417,7 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 		} else if (!collect && isEnabled) {
 			stopStatisticsCollection();
 			isEnabled = false;
-		} 
+		}
 		/* otherwise, state is not changing; no-op */
 	}
 
@@ -459,12 +434,23 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 	 * Start all stats threads.
 	 */
 	private void startStatisticsCollection() {
-		// portStatsCollector = threadPoolService.getScheduledExecutor().scheduleAtFixedRate(new PortStatsCollector(), portStatsInterval, portStatsInterval, TimeUnit.SECONDS);
-		portStatsCollector = threadPoolService.getScheduledExecutor().scheduleAtFixedRate(new PortStatsCollector(), 1000, 1000, TimeUnit.MILLISECONDS); // QB: in terms of ms; seems g
-		// portStatsCollector = threadPoolService.getScheduledExecutor().scheduleAtFixedRate(new PortStatsCollector(), 2, 2, TimeUnit.SECONDS); // QB: seems g as well
-		tentativePortStats.clear(); /* must clear out, otherwise might have huge BW result if present and wait a long time before re-enabling stats */
-		flowStatsCollector = threadPoolService.getScheduledExecutor().scheduleAtFixedRate(new FlowStatsCollector(), flowStatsInterval, flowStatsInterval, TimeUnit.SECONDS);
-		portDescCollector = threadPoolService.getScheduledExecutor().scheduleAtFixedRate(new PortDescCollector(), portStatsInterval, portStatsInterval, TimeUnit.SECONDS);
+		// portStatsCollector =
+		// threadPoolService.getScheduledExecutor().scheduleAtFixedRate(new
+		// PortStatsCollector(), portStatsInterval, portStatsInterval,
+		// TimeUnit.SECONDS);
+		portStatsCollector = threadPoolService.getScheduledExecutor().scheduleAtFixedRate(new PortStatsCollector(),
+				1000, 1000, TimeUnit.MILLISECONDS);
+		// portStatsCollector =
+		// threadPoolService.getScheduledExecutor().scheduleAtFixedRate(new
+		// PortStatsCollector(), 2, 2, TimeUnit.SECONDS);
+		tentativePortStats.clear(); /*
+									 * must clear out, otherwise might have huge BW result if present and wait a
+									 * long time before re-enabling stats
+									 */
+		flowStatsCollector = threadPoolService.getScheduledExecutor().scheduleAtFixedRate(new FlowStatsCollector(),
+				flowStatsInterval, flowStatsInterval, TimeUnit.SECONDS);
+		portDescCollector = threadPoolService.getScheduledExecutor().scheduleAtFixedRate(new PortDescCollector(),
+				portStatsInterval, portStatsInterval, TimeUnit.SECONDS);
 		log.warn("Statistics collection thread(s) started");
 	}
 
@@ -472,7 +458,8 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 	 * Stop all stats threads.
 	 */
 	private void stopStatisticsCollection() {
-		if (!portStatsCollector.cancel(false) || !flowStatsCollector.cancel(false) || !portDescCollector.cancel(false)) {
+		if (!portStatsCollector.cancel(false) || !flowStatsCollector.cancel(false)
+				|| !portDescCollector.cancel(false)) {
 			log.error("Could not cancel port/flow stats threads");
 		} else {
 			log.warn("Statistics collection thread(s) stopped");
@@ -481,6 +468,7 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 
 	/**
 	 * Retrieve the statistics from all switches in parallel.
+	 * 
 	 * @param dpids
 	 * @param statsType
 	 * @return
@@ -497,12 +485,12 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 			t.start();
 		}
 
-		/* Join all the threads after the timeout. Set a hard timeout
-		 * of 12 seconds for the threads to finish. If the thread has not
-		 * finished the switch has not replied yet and therefore we won't
-		 * add the switch's stats to the reply.
+		/*
+		 * Join all the threads after the timeout. Set a hard timeout of 12 seconds for
+		 * the threads to finish. If the thread has not finished the switch has not
+		 * replied yet and therefore we won't add the switch's stats to the reply.
 		 */
-		for (int iSleepCycles = 0; iSleepCycles < portStatsInterval; iSleepCycles++) { // QB (important): even tho this is still 10, still find as we break once the threads are done
+		for (int iSleepCycles = 0; iSleepCycles < portStatsInterval; iSleepCycles++) {
 			for (GetStatisticsThread curThread : activeThreads) {
 				if (curThread.getState() == State.TERMINATED) {
 					model.put(curThread.getSwitchId(), curThread.getStatisticsReply());
@@ -535,6 +523,7 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 
 	/**
 	 * Get statistics from a switch.
+	 * 
 	 * @param switchId
 	 * @param statsType
 	 * @return
@@ -548,118 +537,95 @@ public class StatisticsCollector implements IFloodlightModule, IStatisticsServic
 		if (sw != null) {
 			OFStatsRequest<?> req = null;
 			switch (statsType) {
-			case FLOW:
-				match = sw.getOFFactory().buildMatch().build();
-				if (sw.getOFFactory().getVersion().compareTo(OFVersion.OF_11) >= 0) {
-					req = sw.getOFFactory().buildFlowStatsRequest()
-							.setMatch(match)
-							.setOutPort(OFPort.ANY)
-							.setOutGroup(OFGroup.ANY)
-							.setTableId(TableId.ALL)
-							.build();
-				} else{
-					req = sw.getOFFactory().buildFlowStatsRequest()
-							.setMatch(match)
-							.setOutPort(OFPort.ANY)
-							.setTableId(TableId.ALL)
-							.build();
-				}
-				break;
-			case AGGREGATE:
-				match = sw.getOFFactory().buildMatch().build();
-				req = sw.getOFFactory().buildAggregateStatsRequest()
-						.setMatch(match)
-						.setOutPort(OFPort.ANY)
-						.setTableId(TableId.ALL)
-						.build();
-				break;
-			case PORT:
-				req = sw.getOFFactory().buildPortStatsRequest()
-				.setPortNo(OFPort.ANY)
-				.build();
-				break;
-			case QUEUE:
-				req = sw.getOFFactory().buildQueueStatsRequest()
-				.setPortNo(OFPort.ANY)
-				.setQueueId(UnsignedLong.MAX_VALUE.longValue())
-				.build();
-				break;
-			case DESC:
-				req = sw.getOFFactory().buildDescStatsRequest()
-				.build();
-				break;
-			case GROUP:
-				if (sw.getOFFactory().getVersion().compareTo(OFVersion.OF_10) > 0) {
-					req = sw.getOFFactory().buildGroupStatsRequest()				
-							.build();
-				}
-				break;
+				case FLOW:
+					match = sw.getOFFactory().buildMatch().build();
+					if (sw.getOFFactory().getVersion().compareTo(OFVersion.OF_11) >= 0) {
+						req = sw.getOFFactory().buildFlowStatsRequest().setMatch(match).setOutPort(OFPort.ANY)
+								.setOutGroup(OFGroup.ANY).setTableId(TableId.ALL).build();
+					} else {
+						req = sw.getOFFactory().buildFlowStatsRequest().setMatch(match).setOutPort(OFPort.ANY)
+								.setTableId(TableId.ALL).build();
+					}
+					break;
+				case AGGREGATE:
+					match = sw.getOFFactory().buildMatch().build();
+					req = sw.getOFFactory().buildAggregateStatsRequest().setMatch(match).setOutPort(OFPort.ANY)
+							.setTableId(TableId.ALL).build();
+					break;
+				case PORT:
+					req = sw.getOFFactory().buildPortStatsRequest().setPortNo(OFPort.ANY).build();
+					break;
+				case QUEUE:
+					req = sw.getOFFactory().buildQueueStatsRequest().setPortNo(OFPort.ANY)
+							.setQueueId(UnsignedLong.MAX_VALUE.longValue()).build();
+					break;
+				case DESC:
+					req = sw.getOFFactory().buildDescStatsRequest().build();
+					break;
+				case GROUP:
+					if (sw.getOFFactory().getVersion().compareTo(OFVersion.OF_10) > 0) {
+						req = sw.getOFFactory().buildGroupStatsRequest().build();
+					}
+					break;
 
-			case METER:
-				if (sw.getOFFactory().getVersion().compareTo(OFVersion.OF_13) >= 0) {
-					req = sw.getOFFactory().buildMeterStatsRequest()
-							.setMeterId(OFMeterSerializerVer13.ALL_VAL)
-							.build();
-				}
-				break;
+				case METER:
+					if (sw.getOFFactory().getVersion().compareTo(OFVersion.OF_13) >= 0) {
+						req = sw.getOFFactory().buildMeterStatsRequest().setMeterId(OFMeterSerializerVer13.ALL_VAL)
+								.build();
+					}
+					break;
 
-			case GROUP_DESC:			
-				if (sw.getOFFactory().getVersion().compareTo(OFVersion.OF_10) > 0) {
-					req = sw.getOFFactory().buildGroupDescStatsRequest()			
-							.build();
-				}
-				break;
+				case GROUP_DESC:
+					if (sw.getOFFactory().getVersion().compareTo(OFVersion.OF_10) > 0) {
+						req = sw.getOFFactory().buildGroupDescStatsRequest().build();
+					}
+					break;
 
-			case GROUP_FEATURES:
-				if (sw.getOFFactory().getVersion().compareTo(OFVersion.OF_10) > 0) {
-					req = sw.getOFFactory().buildGroupFeaturesStatsRequest()
-							.build();
-				}
-				break;
+				case GROUP_FEATURES:
+					if (sw.getOFFactory().getVersion().compareTo(OFVersion.OF_10) > 0) {
+						req = sw.getOFFactory().buildGroupFeaturesStatsRequest().build();
+					}
+					break;
 
-			case METER_CONFIG:
-				if (sw.getOFFactory().getVersion().compareTo(OFVersion.OF_13) >= 0) {
-					req = sw.getOFFactory().buildMeterConfigStatsRequest()
-							.build();
-				}
-				break;
+				case METER_CONFIG:
+					if (sw.getOFFactory().getVersion().compareTo(OFVersion.OF_13) >= 0) {
+						req = sw.getOFFactory().buildMeterConfigStatsRequest().build();
+					}
+					break;
 
-			case METER_FEATURES:
-				if (sw.getOFFactory().getVersion().compareTo(OFVersion.OF_13) >= 0) {
-					req = sw.getOFFactory().buildMeterFeaturesStatsRequest()
-							.build();
-				}
-				break;
+				case METER_FEATURES:
+					if (sw.getOFFactory().getVersion().compareTo(OFVersion.OF_13) >= 0) {
+						req = sw.getOFFactory().buildMeterFeaturesStatsRequest().build();
+					}
+					break;
 
-			case TABLE:
-				if (sw.getOFFactory().getVersion().compareTo(OFVersion.OF_10) > 0) {
-					req = sw.getOFFactory().buildTableStatsRequest()
-							.build();
-				}
-				break;
+				case TABLE:
+					if (sw.getOFFactory().getVersion().compareTo(OFVersion.OF_10) > 0) {
+						req = sw.getOFFactory().buildTableStatsRequest().build();
+					}
+					break;
 
-			case TABLE_FEATURES:	
-				if (sw.getOFFactory().getVersion().compareTo(OFVersion.OF_10) > 0) {
-					req = sw.getOFFactory().buildTableFeaturesStatsRequest()
-							.build();		
-				}
-				break;
-			case PORT_DESC:
-				if (sw.getOFFactory().getVersion().compareTo(OFVersion.OF_13) >= 0) {
-					req = sw.getOFFactory().buildPortDescStatsRequest()
-							.build();
-				}
-				break;
-			case EXPERIMENTER:		
-			default:
-				log.error("Stats Request Type {} not implemented yet", statsType.name());
-				break;
+				case TABLE_FEATURES:
+					if (sw.getOFFactory().getVersion().compareTo(OFVersion.OF_10) > 0) {
+						req = sw.getOFFactory().buildTableFeaturesStatsRequest().build();
+					}
+					break;
+				case PORT_DESC:
+					if (sw.getOFFactory().getVersion().compareTo(OFVersion.OF_13) >= 0) {
+						req = sw.getOFFactory().buildPortDescStatsRequest().build();
+					}
+					break;
+				case EXPERIMENTER:
+				default:
+					log.error("Stats Request Type {} not implemented yet", statsType.name());
+					break;
 			}
 
 			try {
 				if (req != null) {
-					future = sw.writeStatsRequest(req); 
-					// values = (List<OFStatsReply>) future.get(portStatsInterval*1000 / 2, TimeUnit.MILLISECONDS);
+					future = sw.writeStatsRequest(req);
+					// values = (List<OFStatsReply>) future.get(portStatsInterval*1000 / 2,
+					// TimeUnit.MILLISECONDS);
 					values = (List<OFStatsReply>) future.get(950, TimeUnit.MILLISECONDS);
 
 				}

@@ -16,6 +16,12 @@ findbugs-results
 *.iml
 .metadata/
 /bin/
-scripts/flooder.pcap
+sdnlb-scripts/flooder.pcap
 ./cont*
-scripts/*.pcap
+sdnlb-scripts/*.pcap
+/sdnlb-scripts/pinger-output
+/flooder-1000-1800.pcap
+/sdnlb-scripts/flooder-1000-1800.pcap
+/sdnlb-scripts/flooder*.pcap*
+/sdnlb-scripts/pylb-output/lb-decisions
+/cont.log
