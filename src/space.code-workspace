@@ -1,13 +1,3 @@
-{
-	"folders": [
-		{
-			"path": "/Users/qkb/lab/home/Documents/repos/floodlight"
-		}
-	],
-	"settings": {
-		"java.configuration.updateBuildConfiguration": "automatic",
-		"files.associations": {
-			"inet.h": "c"
-		}
-	}
-}
+version https://git-lfs.github.com/spec/v1
+oid sha256:aedb146ca8e3a981207458191973aa3ac0ff2459a9fd87ea67247b438d3b8109
+size 216
